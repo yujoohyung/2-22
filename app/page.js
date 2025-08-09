@@ -1,103 +1,118 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import React, { useState, useEffect } from 'react';
+import { Button, Input, Table, message } from 'antd';
+import { Line } from '@ant-design/charts';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
+
+const tradeHistoryColumns = [
+  { title: '종류', dataIndex: 'type', key: 'type' }, { title: '가격', dataIndex: 'price', key: 'price' },
+  { title: '수량', dataIndex: 'quantity', key: 'quantity' },
+];
+
+export default function HomePage() {
+  const [price, setPrice] = useState('');
+  const [quantity, setQuantity] = useState('');
+  const [tradeHistory, setTradeHistory] = useState([]);
+  const [portfolioStats, setPortfolioStats] = useState({ totalInvestment: 0, averagePrice: 0, totalShares: 0 });
+  const [stockData, setStockData] = useState([]); // <--- 실제 주식 차트 데이터를 담을 공간
+
+  const calculatePortfolio = (trades) => {
+    let totalInvestment = 0;
+    let totalShares = 0;
+    trades.forEach(trade => {
+      if (trade.type === '매수') {
+        totalInvestment += trade.price * trade.quantity;
+        totalShares += trade.quantity;
+      }
+    });
+    const averagePrice = totalShares > 0 ? totalInvestment / totalShares : 0;
+    setPortfolioStats({ totalInvestment, averagePrice: Math.round(averagePrice), totalShares });
+  };
+
+  const fetchTrades = async () => {
+    const { data, error } = await supabase.from('trades').select('*').order('created_at', { ascending: false });
+    if (error) {
+      console.error("매매 내역 불러오기 실패:", error);
+    } else {
+      setTradeHistory(data);
+      calculatePortfolio(data);
+    }
+  };
+
+  // 주식 데이터를 불러오는 함수
+  const fetchStockData = async () => {
+    const apiKey = process.env.NEXT_PUBLIC_FMP_API_KEY;
+    const ticker = 'AAPL'; // 예시로 애플 주식
+    const url = `https://financialmodelingprep.com/api/v3/historical-price-full/${ticker}?apikey=${apiKey}`;
+
+    try {
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      // 차트 형식에 맞게 데이터 가공
+      const formattedData = data.historical.slice(0, 30).map(item => ({
+        date: item.date,
+        price: item.close,
+      })).reverse(); // 최신 날짜가 뒤로 가도록 배열 뒤집기
+
+      setStockData(formattedData);
+    } catch (error) {
+      console.error("주식 데이터 불러오기 실패:", error);
+      message.error("주식 데이터를 불러오는 데 실패했습니다.");
+    }
+  };
+
+  useEffect(() => {
+    fetchTrades();
+    fetchStockData(); // <--- 페이지 시작 시 주식 데이터도 불러오기
+  }, []);
+
+  const chartConfig = { data: stockData, xField: 'date', yField: 'price', height: 300 };
+
+  const handleBuy = async () => {
+    // ... (handleBuy 함수는 변경 없음) ...
+    const { error } = await supabase
+      .from('trades')
+      .insert([{ type: '매수', price: parseInt(price), quantity: parseInt(quantity) }]);
+    if (error) { message.error('매수 기록 저장에 실패했습니다: ' + error.message); }
+    else { message.success('매수 기록이 성공적으로 저장되었습니다.'); setPrice(''); setQuantity(''); fetchTrades(); }
+  };
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.js
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div style={{ padding: '20px' }}>
+      <h1>나의 투자 대시보드</h1>
+      
+      <div style={{ marginBottom: '40px' }}>
+        <h2>AAPL 주가</h2>
+        {/* stockData가 비어있으면 로딩 메시지 표시 */}
+        {stockData.length > 0 ? <Line {...chartConfig} /> : <p>주가 차트 로딩 중...</p>}
+      </div>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      <div style={{ marginBottom: '40px' }}>
+        <h2>내 예수금 / 평단 / 수익률</h2>
+        <p>총 투자 예수금: {portfolioStats.totalInvestment.toLocaleString()}원</p>
+        <p>보유 수량: {portfolioStats.totalShares}주</p>
+        <p>평균 단가: {portfolioStats.averagePrice.toLocaleString()}원</p>
+      </div>
+
+      <div style={{ marginBottom: '40px' }}>
+        <h2>매매 기록 입력</h2>
+        <Input placeholder="가격" type="number" style={{ width: '150px', marginRight: '10px' }} value={price} onChange={(e) => setPrice(e.target.value)} />
+        <Input placeholder="수량" type="number" style={{ width: '150px', marginRight: '10px' }} value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+        <Button type="primary" style={{ marginRight: '5px' }} onClick={handleBuy}>매수</Button>
+        <Button danger>매도</Button>
+      </div>
+
+      <div>
+        <h2>매매 내역</h2>
+        <Table columns={tradeHistoryColumns} dataSource={tradeHistory} rowKey="id" />
+      </div>
     </div>
   );
 }
