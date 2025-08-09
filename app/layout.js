@@ -1,3 +1,4 @@
+import '@ant-design/v5-patch-for-react-19'; // 👈 React 19 + antd v5 호환 패치
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 

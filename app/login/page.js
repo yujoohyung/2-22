@@ -1,56 +1,54 @@
-"use client"; // 이 줄을 맨 위에 꼭 추가해야 합니다!
+"use client";
 
-import { useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-// 이전에 만들었던 Supabase 클라이언트를 다시 만듭니다.
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
+import { useState } from "react";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
 export default function LoginPage() {
-  // 사용자가 입력하는 이메일과 비밀번호를 기억할 공간을 만듭니다.
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const supabase = createClientComponentClient(); // ✅ 쿠키 동기화 클라
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
-  // 로그인 버튼을 눌렀을 때 실행될 함수
   const handleLogin = async () => {
-    console.log("로그인 시도:", email, password); // 입력값이 잘 들어오는지 확인
-
-    // Supabase에 이메일과 비밀번호로 로그인을 요청합니다.
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email,
-      password: password,
+    // 허용 이메일 서버에서 확인
+    const res = await fetch("/api/is-allowed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.trim() })
     });
-
-    if (error) {
-      console.error("로그인 에러:", error);
-      alert("로그인에 실패했습니다: " + error.message);
-    } else {
-      console.log("로그인 성공!", data);
-      alert("로그인에 성공했습니다!");
+    const { allowed } = await res.json();
+    if (!res.ok || !allowed) {
+      alert("허용되지 않은 계정입니다.");
+      return;
     }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password
+    });
+    if (error) {
+      alert("아이디 또는 비밀번호가 올바르지 않습니다.");
+      return;
+    }
+
+    // ✅ 쿠키 세션이 미들웨어에 반영되도록 하드 리다이렉트
+    const params = new URLSearchParams(window.location.search);
+    const back = params.get("redirectTo") || "/dashboard";
+    window.location.assign(back);
   };
 
   return (
-    <div>
-      <h1>로그인 페이지</h1>
-      {/* 입력창에 글자를 쓸 때마다 email, password 변수에 값을 저장합니다. */}
-      <input 
-        type="email" 
-        placeholder="이메일"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)} 
-      />
-      <input 
-        type="password" 
-        placeholder="비밀번호"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
-      {/* 버튼을 클릭하면 handleLogin 함수를 실행합니다. */}
-      <button onClick={handleLogin}>로그인</button>
+    <div style={{ padding: 50, maxWidth: 400, margin: "100px auto", border: "1px solid #ddd", borderRadius: 8 }}>
+      <h1 style={{ textAlign: "center", marginBottom: 30 }}>로그인</h1>
+      <input type="email" placeholder="이메일" value={email} onChange={(e)=>setEmail(e.target.value)}
+             style={{ width:"100%", padding:10, marginBottom:10 }} />
+      <input type="password" placeholder="비밀번호" value={password} onChange={(e)=>setPassword(e.target.value)}
+             style={{ width:"100%", padding:10, marginBottom:20 }} />
+      <button onClick={handleLogin} style={{ width:"100%", padding:12, background:"#007bff", color:"#fff", border:"none", borderRadius:4 }}>
+        로그인
+      </button>
+      <p style={{ marginTop: 20, textAlign: "center" }}>
+        계정이 없으신가요? <a href="/admin/add-user">회원가입</a>
+      </p>
     </div>
   );
 }
