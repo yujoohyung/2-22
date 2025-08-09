@@ -1,16 +1,10 @@
-import '@ant-design/v5-patch-for-react-19'; // 👈 React 19 + antd v5 호환 패치
+import '@ant-design/v5-patch-for-react-19'; // React 19 + antd v5 호환 패치
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import NavBar from "@/components/NavBar"; // ✅ 추가
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
+const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata = {
   title: "Create Next App",
@@ -20,10 +14,11 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        <NavBar /> {/* ✅ 상단 고정 네비 */}
+        <main style={{ maxWidth: 960, margin: "0 auto", padding: 20 }}>
+          {children}
+        </main>
       </body>
     </html>
   );

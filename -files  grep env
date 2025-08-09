@@ -1,0 +1,5 @@
+[33mf0c0672[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m Add .gitignore to exclude env and build files
+[33m935b984[m 관리자 코드 trim 처리 + 회원가입/로그인/대시보드 완성
+[33m5a51f20[m 로그인 및 회원가입 기능 추가
+[33mc424ff4[m first commit
+[33mf7ab1cc[m Initial commit from Create Next App
