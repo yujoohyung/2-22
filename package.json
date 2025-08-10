@@ -15,7 +15,8 @@
     "antd": "^5.26.7",
     "next": "^15.4.5",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "zustand": "^5.0.7"
   },
   "devDependencies": {
     "@ant-design/v5-patch-for-react-19": "^1.0.3",
