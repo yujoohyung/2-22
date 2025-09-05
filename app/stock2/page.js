@@ -1,7 +1,15 @@
 "use client";
 
 import { useMemo, useRef, useState, useEffect } from "react";
-import { useAppStore, selectCashRemain } from "../store";
+import { useAppStore } from "../store";
+
+/** 종목코드: ACE 미국빅테크TOP7 Plus레버리지 */
+const CODE = "465610";
+
+/** 이 페이지 고유 키(로그/트레이드 분리용) */
+const SYMBOL = "stock2";
+/** 합산 계산용: 반대편(나스닥) 심볼 */
+const OTHER_SYMBOL = "dashboard";
 
 /** 로컬 YYYY-MM-DD */
 function todayLocal() {
@@ -10,54 +18,275 @@ function todayLocal() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** YYYY-MM-DD / YYYYMMDD → YYYYMMDD */
+function dkey(s) {
+  if (!s) return "";
+  const t = String(s).replace(/-/g, "");
+  return t.slice(0, 8);
+}
+
 /** 포맷터 */
 const fmt = (n) => (n == null || Number.isNaN(n) ? "-" : Number(n).toLocaleString("ko-KR"));
 const pct = (n) => (n == null || Number.isNaN(n) ? "-" : `${Number(n).toFixed(2)}%`);
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-/** API 고정 표본(실운영 시 API 응답으로 대체) */
-const apiRows = [
-  { signal: "1단계", date: "2025-08-01", price: 11825, dailyPct: -1.2, rsi: 28.4 },
-  { signal: "",     date: "2025-08-02", price: 12440, dailyPct:  1.9, rsi: 31.2 },
-  { signal: "",     date: "2025-08-03", price: 13405, dailyPct:  3.0, rsi: 35.8 },
-  { signal: "",     date: "2025-08-04", price: 13980, dailyPct:  1.7, rsi: 39.1 },
-  { signal: "2단계", date: "2025-08-05", price: 14750, dailyPct:  2.3, rsi: 42.5 },
-  { signal: "",     date: "2025-08-06", price: 15220, dailyPct:  1.4, rsi: 45.0 },
-  { signal: "",     date: "2025-08-07", price: 15990, dailyPct:  2.2, rsi: 49.2 },
-  { signal: "",     date: "2025-08-08", price: 16210, dailyPct:  0.6, rsi: 50.3 },
-  { signal: "3단계", date: "2025-08-09", price: 16880, dailyPct:  1.8, rsi: 53.7 },
-  { signal: "",     date: "2025-08-10", price: 17240, dailyPct:  1.0, rsi: 55.9 },
-  { signal: "",     date: "2025-08-11", price: 17990, dailyPct:  2.0, rsi: 58.6 },
-  { signal: "",     date: "2025-08-12", price: 18110, dailyPct:  0.3, rsi: 59.1 },
-];
+/** RSI (Cutler) */
+function calcRSI_Cutler(values, period = 14) {
+  const n = values.length;
+  const out = Array(n).fill(null);
+  if (!Array.isArray(values) || n < period + 1) return out;
+
+  const gains = Array(n).fill(0);
+  const losses = Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const d = values[i] - values[i - 1];
+    gains[i] = d > 0 ? d : 0;
+    losses[i] = d < 0 ? -d : 0;
+  }
+  let sumG = 0, sumL = 0;
+  for (let i = 1; i <= period; i++) { sumG += gains[i]; sumL += losses[i]; }
+  let avgG = sumG / period, avgL = sumL / period;
+  out[period] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - 100 / (1 + (avgG / avgL));
+  for (let i = period + 1; i < n; i++) {
+    sumG += gains[i] - gains[i - period];
+    sumL += losses[i] - losses[i - period];
+    avgG = sumG / period; avgL = sumL / period;
+    out[i] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - 100 / (1 + (avgG / avgL));
+  }
+  return out;
+}
+
+/** SMA */
+function calcSMA(values, window) {
+  const n = values.length;
+  const out = Array(n).fill(null);
+  if (!Array.isArray(values) || window <= 0 || n < window) return out;
+  let sum = 0;
+  for (let i = 0; i < window; i++) sum += values[i];
+  out[window - 1] = sum / window;
+  for (let i = window; i < n; i++) {
+    sum += values[i] - values[i - window];
+    out[i] = sum / window;
+  }
+  return out;
+}
+
+/** 다른 페이지(now 가격) 읽기용 훅: localStorage now:<SYMBOL> */
+function useOtherNow(otherKey) {
+  const [otherNow, setOtherNow] = useState(0); // SSR/CSR 동일 초기값
+  useEffect(() => {
+    const refresh = () => {
+      try { setOtherNow(Number(JSON.parse(localStorage.getItem(`now:${otherKey}`) || "0")) || 0); } catch {}
+    };
+    refresh();
+    const onStorage = (e) => { if (e.key === `now:${otherKey}`) refresh(); };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", refresh);
+    return () => { window.removeEventListener("storage", onStorage); window.removeEventListener("focus", refresh); };
+  }, [otherKey]);
+  return otherNow;
+}
+
+/** 부호/색상 유틸 (+ 빨강 / - 파랑) */
+const RED = "#b91c1c";
+const BLUE = "#1d4ed8";
+const colorPL = (v) => (v > 0 ? RED : v < 0 ? BLUE : "#111");
+const sPct = (v) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}%`;
+const sWon = (v) => `${v >= 0 ? "+" : "-"}${Number(Math.round(Math.abs(v))).toLocaleString("ko-KR")}원`;
 
 export default function Stock2Page() {
-  /** 👇 심볼은 'stock2'로 저장 (예치금 페이지가 표시용으로 BIGTECH2X로 묶어 보여줌) */
-  const SYMBOL = "stock2";
   const { stepQty, trades, addTrade, setTrades } = useAppStore();
-  const remainCash = useAppStore(selectCashRemain);
+  const yearlyBudget = useAppStore((s) => s.yearlyBudget);
 
-  /** 초기 trades 보장 */
+  /** 마운트 여부 (하이드레이션 안전 렌더용) */
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => { setIsMounted(true); }, []);
+
+  /** 다른 페이지 now (나스닥 가격) */
+  const otherNow = useOtherNow(OTHER_SYMBOL);
+
+  /** trades 초기 보장 */
   useEffect(() => {
     if ((trades[SYMBOL] || []).length) return;
     setTrades(SYMBOL, []);
   }, [trades, setTrades]);
 
-  /** 매수 누적/평단 계산 (매도 제외) */
+  /** 위 표용 원시 rows (빅테크 가격) */
+  const [apiRows, setApiRows] = useState([]);
+  const [isDailyReady, setIsDailyReady] = useState(false);
+
+  /** 상단 표 스크롤 참조 + 최초 진입 시 최신(맨아래)로 스크롤 */
+  const topTableScrollRef = useRef(null);
+  const [scrolledToBottomOnce, setScrolledToBottomOnce] = useState(false);
+
+  /** 일자별 시세 로드: 가격=빅테크, 신호=나스닥(따라감) */
+  useEffect(() => {
+    (async () => {
+      try {
+        const pad = (n) => String(n).padStart(2, "0");
+        const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+        const today = new Date();
+        const end = ymd(today);
+        const s = new Date(today); s.setDate(s.getDate() - 400);
+        const start = ymd(s);
+
+        // 빅테크 자체 가격
+        const resB = await fetch(`/api/kis/daily?code=${CODE}&start=${start}&end=${end}`);
+        if (!resB.ok) { await resB.text().catch(() => ""); throw new Error(`dailyB ${resB.status}`); }
+        const dB = await resB.json();
+        if (!dB.ok) throw new Error("dailyB api error");
+        const outB = dB.output || dB.output1 || [];
+        const arrB = Array.isArray(outB) ? outB : [];
+        const baseRows = arrB.map((x) => ({
+          date: x.stck_bsop_date || x.bstp_nmis || x.date,
+          close: Number(x.stck_clpr || x.tdd_clsprc || x.close),
+          prev:  Number(x.prdy_clpr || x.prev),
+        })).filter((r) => r.date && Number.isFinite(r.close));
+        baseRows.sort((a, b) => a.date.localeCompare(b.date));
+
+        // 나스닥 가격 → 신호 계산
+        const NAS_CODE = "418660";
+        const resN = await fetch(`/api/kis/daily?code=${NAS_CODE}&start=${start}&end=${end}`);
+        if (!resN.ok) { await resN.text().catch(() => ""); throw new Error(`dailyN ${resN.status}`); }
+        const dN = await resN.json();
+        if (!dN.ok) throw new Error("dailyN api error");
+        const outN = dN.output || dN.output1 || [];
+        const arrN = Array.isArray(outN) ? outN : [];
+        const rowsN = arrN.map((x) => ({
+          date: x.stck_bsop_date || x.bstp_nmis || x.date,
+          close: Number(x.stck_clpr || x.tdd_clsprc || x.close),
+          prev:  Number(x.prdy_clpr || x.prev),
+        })).filter((r) => r.date && Number.isFinite(r.close));
+        rowsN.sort((a, b) => a.date.localeCompare(b.date));
+
+        const seriesN = rowsN.map((r) => r.close);
+        const rsiN = calcRSI_Cutler(seriesN, 14);
+        const ma200N = calcSMA(seriesN, 200);
+
+        const soldYear = new Set();
+        const sigMap = new Map(); // date -> {signal, sell}
+
+        rowsN.forEach((r, i) => {
+          // RSI 단계
+          let sig = "";
+          const rv = rsiN[i];
+          if (rv != null) {
+            if (rv <= 30) sig = "3단계";
+            else if (rv <= 36) sig = "2단계";
+            else if (rv <= 43) sig = "1단계";
+          }
+          // 연 1회 매도(200일선)
+          const year = r.date?.slice(0, 4);
+          const below200 = ma200N[i] != null && r.close < ma200N[i];
+          const sellNow = !!(below200 && year && !soldYear.has(year));
+          if (sellNow) soldYear.add(year);
+
+          sigMap.set(r.date, { signal: sig, sell: sellNow });
+        });
+
+        // 빅테크 행 = 빅테크 가격 + (나스닥 신호)
+        const seriesB = baseRows.map((x) => x.close);
+        const rsiB = calcRSI_Cutler(seriesB, 14);
+        const resRows = baseRows.map((r, i, arr) => {
+          const base = i > 0 ? arr[i - 1].close : (r.prev ?? r.close);
+          const dp = base ? ((r.close - base) / base) * 100 : null;
+          const sig = sigMap.get(r.date) || { signal: "", sell: false };
+          return { signal: sig.signal, date: r.date, price: r.close, dailyPct: dp, rsi: rsiB[i], sell: sig.sell };
+        });
+
+        setApiRows(resRows);
+        setIsDailyReady(true);
+      } catch {
+        setTimeout(() => setIsDailyReady(true), 1200);
+      }
+    })();
+  }, []);
+
+  /** 현재가/고가 실시간(SSE) — 실패 시 REST 폴백 */
+  const [nowQuote, setNowQuote] = useState(null);
+
+  useEffect(() => {
+    if (!isDailyReady) return;
+    let es = null, fallbackTimer = null, inFlight = false;
+
+    const safeFetchNow = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 7000);
+      try {
+        const res = await fetch(`/api/kis/now?code=${CODE}`, { signal: ctrl.signal, cache: "no-store" });
+        if (!res.ok) { await res.text().catch(() => ""); return; }
+        let d = null; try { d = await res.json(); } catch { return; }
+        if (!d || d.ok === false) return;
+        const o = d.output || {};
+        setNowQuote({ price: Number(o.stck_prpr || 0), high: Number(o.stck_hgpr || 0) });
+      } finally { clearTimeout(to); inFlight = false; }
+    };
+
+    try { es = new EventSource(`/api/kis/stream?code=${CODE}`); } catch {}
+    if (es) {
+      es.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "tick") {
+            setNowQuote({ price: Number(msg.price || 0), high: Number(msg.high || 0) });
+          }
+        } catch {}
+      };
+      es.onerror = () => { try { es.close(); } catch {}; fallbackTimer = setInterval(safeFetchNow, 2000); };
+    } else {
+      fallbackTimer = setInterval(safeFetchNow, 2000);
+    }
+    return () => { try { es && es.close(); } catch {}; if (fallbackTimer) clearInterval(fallbackTimer); };
+  }, [isDailyReady]);
+
+  /** now 가격 캐시: 합산 계산용으로 localStorage 저장 */
+  useEffect(() => {
+    if (!nowQuote?.price) return;
+    try { localStorage.setItem(`now:${SYMBOL}`, JSON.stringify(nowQuote.price)); } catch {}
+  }, [nowQuote?.price]);
+
+  /** 최초 진입 시 표 스크롤을 맨 아래로 */
+  useEffect(() => {
+    if (scrolledToBottomOnce) return;
+    if (!apiRows.length) return;
+    const el = topTableScrollRef.current;
+    if (el) {
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; setScrolledToBottomOnce(true); });
+    }
+  }, [apiRows, scrolledToBottomOnce]);
+
+  /** 매수 누적/평단(표 표시용) — 비거래일 입력은 가장 가까운 이전 거래일로 매핑 */
   const rows = useMemo(() => {
+    const sorted = [...apiRows].sort((a, b) => a.date.localeCompare(b.date));
+    const tradingDays = sorted.map((r) => r.date);
+
+    const mapToTradingDay = (key) => {
+      if (!key || tradingDays.length === 0) return null;
+      let lo = 0, hi = tradingDays.length - 1, ans = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (tradingDays[mid] <= key) { ans = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      return ans >= 0 ? tradingDays[ans] : null;
+    };
+
     const buyQtyByDate = new Map();
     const buyCostByDate = new Map();
     (trades[SYMBOL] || []).forEach((t) => {
       if (!t || !Number(t.qty)) return;
-      const d = t.date;
-      const qty = Number(t.qty ?? 0);
+      const rawKey = dkey(t.date);
+      const dayKey = mapToTradingDay(rawKey);
+      if (!dayKey) return;
+      const qty = Number(t.qty || 0);
       const price = Number(t.price ?? t.buyPrice ?? 0);
-      buyQtyByDate.set(d, (buyQtyByDate.get(d) || 0) + qty);
-      buyCostByDate.set(d, (buyCostByDate.get(d) || 0) + price * qty);
+      buyQtyByDate.set(dayKey, (buyQtyByDate.get(dayKey) || 0) + qty);
+      buyCostByDate.set(dayKey, (buyCostByDate.get(dayKey) || 0) + price * qty);
     });
 
     let cumQty = 0, cumCost = 0;
-    const sorted = [...apiRows].sort((a, b) => a.date.localeCompare(b.date));
     return sorted.map((r) => {
       const dayQty = buyQtyByDate.get(r.date) || 0;
       const dayCost = buyCostByDate.get(r.date) || 0;
@@ -66,73 +295,63 @@ export default function Stock2Page() {
       const avgCost = cumQty > 0 ? Math.round(cumCost / cumQty) : null;
       return { ...r, qty: dayQty, cumQty, avgCost };
     });
-  }, [trades]);
+  }, [trades, apiRows]);
 
-  /** 입력/로그 상태 */
+  /** 전체 매수 수량(해당 심볼) → 매도는 항상 이 수량의 30% 고정 */
+  const totalBuyQty = useMemo(
+    () => (trades[SYMBOL] || []).reduce((s, t) => s + (Number(t.qty) || 0), 0),
+    [trades]
+  );
+
+  /** 입력/로그 상태 — SSR/CSR 동일 초기값 사용 */
   const TX_KEY = "txHistory";
-  const [date, setDate] = useState(todayLocal());
+  const [inputDate, setInputDate] = useState("1970-01-01");
   const [priceInput, setPriceInput] = useState("");
   const [qtyInput, setQtyInput] = useState("");
-  const [txRows, setTxRows] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(TX_KEY) || "[]"); } catch { return []; }
-  });
+  const [txRows, setTxRows] = useState([]); // <- 중요: 초기값 []
 
-  /** 상단 표 스크롤 참조 */
-  const topTableScrollRef = useRef(null);
+  // 마운트 후에만 가변값 세팅 (오늘 날짜 / localStorage)
+  useEffect(() => {
+    setInputDate(todayLocal());
+    try { setTxRows(JSON.parse(localStorage.getItem(TX_KEY) || "[]")); } catch {}
+  }, []);
 
-  /** 리밸런싱 합산 upsert / delete (rbHistory에 당일 합산) */
-  function upsertRebalance({ date, symbol, price, qty }) {
+  /** 리밸런싱 집계 저장 (rbHistory에 'stock2'로 기록) */
+  function upsertRebalance({ date, price, qty }) {
     try {
       const KEY = "rbHistory";
       const addQty = Number(qty);
       const addAmt = Number(price) * Number(qty);
       const cur = JSON.parse(localStorage.getItem(KEY) || "[]");
-      const idx = cur.findIndex((r) => r.date === date && r.symbol === symbol);
+      const idx = cur.findIndex((r) => r.date === date && r.symbol === SYMBOL);
       if (idx >= 0) {
         const r0 = cur[idx];
         const newQty = Number(r0.qty || 0) + addQty;
         const newAmt = Number(r0.amount || 0) + addAmt;
         const newPrice = newQty > 0 ? Math.round(newAmt / newQty) : 0;
-        cur[idx] = { ...r0, qty: newQty, amount: newAmt, price: newPrice, type: "SELL" };
+        cur[idx] = { ...r0, qty: newQty, amount: newAmt, price: newPrice, symbol: SYMBOL, type: "SELL" };
       } else {
-        cur.unshift({
-          date, symbol,
-          qty: addQty,
-          amount: addAmt,
-          price: addQty > 0 ? Math.round(addAmt / addQty) : 0,
-          type: "SELL",
-        });
+        cur.unshift({ date, symbol: SYMBOL, qty: addQty, amount: addAmt, price: addQty > 0 ? Math.round(addAmt / addQty) : 0, type: "SELL" });
       }
       localStorage.setItem(KEY, JSON.stringify(cur));
-      try {
-        const ch = new BroadcastChannel("rb");
-        ch.postMessage({ type: "upsert", payload: { date, symbol, price, qty } });
-        ch.close();
-      } catch {}
+      try { const ch = new BroadcastChannel("rb"); ch.postMessage({ type: "upsert" }); ch.close(); } catch {}
     } catch {}
   }
-  function deleteFromRebalance({ date, symbol, price, qty }) {
+  function deleteFromRebalance({ date, price, qty }) {
     try {
       const KEY = "rbHistory";
       const subQty = Number(qty);
       const subAmt = Number(price) * Number(qty);
       const cur = JSON.parse(localStorage.getItem(KEY) || "[]");
-      const idx = cur.findIndex((r) => r.date === date && r.symbol === symbol);
+      const idx = cur.findIndex((r) => r.date === date && r.symbol === SYMBOL);
       if (idx < 0) return;
       const r0 = cur[idx];
       const newQty = Number(r0.qty || 0) - subQty;
       const newAmt = Number(r0.amount || 0) - subAmt;
-      if (newQty <= 0 || newAmt <= 0) {
-        cur.splice(idx, 1);
-      } else {
-        cur[idx] = { ...r0, qty: newQty, amount: newAmt, price: Math.round(newAmt / newQty) };
-      }
+      if (newQty <= 0 || newAmt <= 0) cur.splice(idx, 1);
+      else cur[idx] = { ...r0, qty: newQty, amount: newAmt, price: Math.round(newAmt / newQty) };
       localStorage.setItem(KEY, JSON.stringify(cur));
-      try {
-        const ch = new BroadcastChannel("rb");
-        ch.postMessage({ type: "delete", payload: { date, symbol, price, qty } });
-        ch.close();
-      } catch {}
+      try { const ch = new BroadcastChannel("rb"); ch.postMessage({ type: "delete" }); ch.close(); } catch {}
     } catch {}
   }
 
@@ -144,7 +363,7 @@ export default function Stock2Page() {
       alert("주가와 수량을 올바르게 입력하세요. (최소 1)");
       return null;
     }
-    if (!date) { alert("날짜를 입력하세요."); return null; }
+    if (!inputDate) { alert("날짜를 입력하세요."); return null; }
     return { price, qty };
   };
 
@@ -162,63 +381,89 @@ export default function Stock2Page() {
     setTxRows(next);
   }
 
-  /** 매수 */
+  /** 매수/매도 */
   const handleBuy = () => {
-    const parsed = parseInputs();
-    if (!parsed) return;
+    const parsed = parseInputs(); if (!parsed) return;
     const { price, qty } = parsed;
-
     const _txid = uid();
-    addTrade(SYMBOL, {
-      _txid, signal: "", date, price, buyPrice: price,
-      dailyPct: null, rsi: null, qty, sellQty: 0,
-    });
-    saveTx({ _txid, _ts: Date.now(), type: "BUY", date, symbol: SYMBOL, price, qty });
-
+    addTrade(SYMBOL, { _txid, signal: "", date: inputDate, price, buyPrice: price, dailyPct: null, rsi: null, qty, sellQty: 0 });
+    saveTx({ _txid, _ts: Date.now(), type: "BUY", date: inputDate, symbol: SYMBOL, price, qty });
     setPriceInput(""); setQtyInput("");
-    requestAnimationFrame(() => {
-      const el = topTableScrollRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    });
+    requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
   };
-
-  /** 매도 */
   const handleSell = () => {
-    const parsed = parseInputs();
-    if (!parsed) return;
+    const parsed = parseInputs(); if (!parsed) return;
     const { price, qty } = parsed;
-
     const _txid = uid();
-    addTrade(SYMBOL, {
-      _txid, signal: "", date, price, buyPrice: price,
-      dailyPct: null, rsi: null, qty: 0, sellQty: qty,
-    });
-    upsertRebalance({ date, symbol: SYMBOL, price, qty });
-    saveTx({ _txid, _ts: Date.now(), type: "SELL", date, symbol: SYMBOL, price, qty });
-
+    addTrade(SYMBOL, { _txid, signal: "", date: inputDate, price, buyPrice: price, dailyPct: null, rsi: null, qty: 0, sellQty: qty });
+    upsertRebalance({ date: inputDate, price, qty });
+    saveTx({ _txid, _ts: Date.now(), type: "SELL", date: inputDate, symbol: SYMBOL, price, qty });
     setPriceInput(""); setQtyInput("");
+    requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
   };
-
-  /** 거래 로그에서 삭제 → 되돌리기 */
   const undoTx = (row) => {
+    // trades 테이블에서 제거
     setTrades(SYMBOL, (trades[SYMBOL] || []).filter((t) => t._txid !== row._txid));
-    if (row.type === "SELL") {
-      deleteFromRebalance({ date: row.date, symbol: row.symbol, price: row.price, qty: row.qty });
+    // type 안전 판별 (거래표/로그표 모두 대응)
+    const type = row?.type ?? (Number(row?.sellQty) > 0 ? "SELL" : "BUY");
+    if (type === "SELL") {
+      deleteFromRebalance({ date: row.date, price: Number(row.price), qty: Number(row.qty) });
     }
     removeTx(row._txid);
   };
 
-  /** 입력 날짜 기준 "오늘 거래"만 필터 */
-  const todayTx = useMemo(() => {
-    return txRows.filter((r) => r.date === date && r.symbol === SYMBOL);
-  }, [txRows, date, SYMBOL]);
+  /** 오늘 거래 로그 (이 페이지 전용) */
+  const todayTx = useMemo(
+    () => txRows.filter((r) => r.date === inputDate && r.symbol === SYMBOL),
+    [txRows, inputDate]
+  );
+
+  /** KPI용: 실제 매수 기록만 기반 */
+  const buysThis = useMemo(() => {
+    const arr = (trades[SYMBOL] || []).filter((t) => Number(t.qty) > 0);
+    const qty = arr.reduce((s, t) => s + Number(t.qty || 0), 0);
+    const amt = arr.reduce((s, t) => s + Number(t.qty || 0) * Number(t.price ?? t.buyPrice ?? 0), 0);
+    return { qty, amt, avg: qty > 0 ? amt / qty : 0 };
+  }, [trades]);
+  const buysOther = useMemo(() => {
+    const arr = (trades[OTHER_SYMBOL] || []).filter((t) => Number(t.qty) > 0);
+    const qty = arr.reduce((s, t) => s + Number(t.qty || 0), 0);
+    const amt = arr.reduce((s, t) => s + Number(t.qty || 0) * Number(t.price ?? t.buyPrice ?? 0), 0);
+    return { qty, amt, avg: qty > 0 ? amt / qty : 0 };
+  }, [trades]);
+
+  /** 매도 누적(수량/금액) */
+  const sellsThisQty = useMemo(
+    () => (trades[SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0), 0),
+    [trades]
+  );
+  const sellsOtherQty = useMemo(
+    () => (trades[OTHER_SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0), 0),
+    [trades]
+  );
+  const sellAmtThis = useMemo(
+    () => (trades[SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0) * Number(t.price ?? t.sellPrice ?? 0), 0),
+    [trades]
+  );
+  const sellAmtOther = useMemo(
+    () => (trades[OTHER_SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0) * Number(t.price ?? t.sellPrice ?? 0), 0),
+    [trades]
+  );
+
+  /** 잔여 포지션(매도 반영)과 잔여원가 */
+  const avgThis = buysThis.qty > 0 ? buysThis.amt / buysThis.qty : 0;
+  const avgOther = buysOther.qty > 0 ? buysOther.amt / buysOther.qty : 0;
+  const remQtyThis = Math.max(0, buysThis.qty - sellsThisQty);
+  const remQtyOther = Math.max(0, buysOther.qty - sellsOtherQty);
+  const remCostThis = remQtyThis * avgThis;
+  const remCostOther = remQtyOther * avgOther;
 
   return (
     <div style={{ padding: "0 16px" }}>
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>TIGER 빅테크7 2x</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>ACE 미국빅테크TOP7 Plus레버리지</h1>
 
-        {/* 가격/지표 표 */}
+        {/* 가격/지표 표 (신호는 나스닥 따라감) */}
         <section style={cardWrap}>
           <div ref={topTableScrollRef} style={{ maxHeight: 420, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -234,18 +479,42 @@ export default function Stock2Page() {
                   const s1 = stepQty.bigtech2x?.s1 ?? 0;
                   const s2 = stepQty.bigtech2x?.s2 ?? 0;
                   const s3 = stepQty.bigtech2x?.s3 ?? 0;
+
+                  // 전체 매수의 30% 매도
+                  const totalBuyQtyLocal = (trades[SYMBOL] || []).reduce((s, t) => s + (Number(t.qty) || 0), 0);
+                  const sellQty = totalBuyQtyLocal > 0 ? Math.max(1, Math.floor(totalBuyQtyLocal * 0.3)) : 0;
+
                   const sig =
-                    r.signal === "1단계" ? (s1 > 0 ? `1단계 / ${s1}주` : "1단계") :
-                    r.signal === "2단계" ? (s2 > 0 ? `2단계 / ${s2}주` : "2단계") :
-                    r.signal === "3단계" ? (s3 > 0 ? `3단계 / ${s3}주` : "3단계") : "";
+                    r.sell
+                      ? (sellQty > 0 ? `매도 / ${fmt(sellQty)}주` : "매도")
+                      : r.signal === "1단계" ? (s1 > 0 ? `1단계 / ${s1}주` : "1단계") :
+                        r.signal === "2단계" ? (s2 > 0 ? `2단계 / ${s2}주` : "2단계") :
+                        r.signal === "3단계" ? (s3 > 0 ? `3단계 / ${s3}주` : "3단계") : "";
+
+                  const isLast = i === rows.length - 1;
+                  const live = isLast && nowQuote?.price > 0;
+                  const price = live ? nowQuote.price : r.price;
+
+                  const prevClose = i > 0 ? rows[i - 1].price : r.price;
+                  const dailyPctLive = prevClose ? ((price - prevClose) / prevClose) * 100 : null;
+                  const dailyPctValue = live ? dailyPctLive : r.dailyPct;
 
                   return (
                     <tr key={i} style={{ borderTop: "1px solid #f0f0f0" }}>
                       <td style={td}>{sig}</td>
                       <td style={td}>{r.date}</td>
-                      <td style={tdRight}>{fmt(r.price)}원</td>
-                      <td style={tdRight}>{pct(r.dailyPct)}</td>
-                      <td style={tdRight}>{r.rsi != null ? r.rsi.toFixed(1) : "-"}</td>
+                      <td style={tdRight}>
+                        {fmt(price)}원
+                        {live && (
+                          <span style={{
+                            marginLeft: 8, fontSize: 11, padding: "2px 6px",
+                            border: "1px solid #b7eb8f", borderRadius: 999,
+                            background: "#e6ffed", color: "#135200", fontWeight: 700
+                          }}>실시간</span>
+                        )}
+                      </td>
+                      <td style={tdRight}>{pct(dailyPctValue)}</td>
+                      <td style={tdRight}>{r.rsi != null ? r.rsi.toFixed(2) : "-"}</td>
                       <td style={tdRight}>{r.avgCost != null ? `${fmt(r.avgCost)}원` : "-"}</td>
                       <td style={tdRight}>{fmt(r.qty)}</td>
                       <td style={tdRight}>{fmt(r.cumQty)}</td>
@@ -255,37 +524,59 @@ export default function Stock2Page() {
               </tbody>
             </table>
           </div>
-          <div style={footNote}>10개를 초과하면 위 표 영역에서 스크롤로 넘겨볼 수 있어요.</div>
+          <div style={footNote}>최신일이 맨 아래입니다. 처음 들어오면 자동으로 최신행으로 스크롤돼요.</div>
         </section>
 
-        {/* 입력 행 */}
+        {/* 입력 행 — 반응형 그리드(창 폭에 따라 5→4→3→2로 자동 개행) */}
         <section style={{ ...cardWrap, padding: 12 }}>
-          <div style={inputGrid}>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={input} />
-            <input type="number" inputMode="numeric" min="1" step="1" placeholder="주가 입력"
-              value={priceInput} onChange={(e) => setPriceInput(e.target.value)} style={input} />
-            <input type="number" inputMode="numeric" min="1" step="1" placeholder="수량 입력"
-              value={qtyInput} onChange={(e) => setQtyInput(e.target.value)} style={input} />
-            <button style={btn} onClick={handleBuy}>매수</button>
-            <button style={btn} onClick={handleSell}>매도</button>
+          <div style={controlsGrid}>
+            <input
+              type="date"
+              value={inputDate}
+              onChange={(e) => setInputDate(e.target.value)}
+              style={inputBase}
+              autoComplete="off"
+            />
+            <input
+              type="number"
+              inputMode="numeric"
+              min="1"
+              step="1"
+              placeholder="주가 입력"
+              value={priceInput}
+              onChange={(e) => setPriceInput(e.target.value)}
+              style={inputBase}
+            />
+            <input
+              type="number"
+              inputMode="numeric"
+              min="1"
+              step="1"
+              placeholder="수량 입력"
+              value={qtyInput}
+              onChange={(e) => setQtyInput(e.target.value)}
+              style={inputBase}
+            />
+            <button style={buyBtn} onClick={handleBuy}>매수</button>
+            <button style={sellBtn} onClick={handleSell}>매도</button>
           </div>
         </section>
 
-        {/* 오늘 거래 로그 */}
+        {/* 오늘 거래 로그 — 마운트 이후 렌더(하이드레이션 안전) */}
         <section style={cardWrap}>
           <div style={{ padding: 12 }}>
-            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>오늘 거래 ({date})</div>
+            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>
+              오늘 거래 ({isMounted ? inputDate : "-"})
+            </div>
             <div style={{ maxHeight: 3 * 44 + 56, overflowY: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
-                  <tr>
-                    {["구분", "시간", "가격", "수량", "합계", ""].map((h) => (
-                      <th key={h} style={th}>{h}</th>
-                    ))}
-                  </tr>
+                  <tr>{["구분", "시간", "가격", "수량", "합계", ""].map((h) => (<th key={h} style={th}>{h}</th>))}</tr>
                 </thead>
                 <tbody>
-                  {todayTx.length === 0 ? (
+                  {!isMounted ? (
+                    <tr><td colSpan={6} style={{ padding: 16, textAlign: "center", color: "#777" }}>내역 없음</td></tr>
+                  ) : todayTx.length === 0 ? (
                     <tr><td colSpan={6} style={{ padding: 16, textAlign: "center", color: "#777" }}>내역 없음</td></tr>
                   ) : todayTx.map((r) => {
                     const time = new Date(r._ts || Date.now());
@@ -300,54 +591,77 @@ export default function Stock2Page() {
                         <td style={tdRight}>{fmt(r.price)}원</td>
                         <td style={tdRight}>{fmt(r.qty)}</td>
                         <td style={tdRight}>{fmt(sum)}원</td>
-                        <td style={tdRight}>
-                          <button style={smallBtn} onClick={() => undoTx(r)}>삭제</button>
-                        </td>
+                        <td style={tdRight}><button style={smallBtn} onClick={() => undoTx(r)}>삭제</button></td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
             </div>
-            <div style={footNote}>여기서 삭제하면 위 표/리밸런싱 기록도 함께 되돌려집니다.</div>
           </div>
         </section>
 
-        {/* 샘플 지표 섹션 */}
+        {/* 하단 KPI (+ 빨강 / - 파랑) — 매도 반영 & 예치금 = 납입+매도금액 */}
         <section style={cardWrap}>
           {(() => {
-            const 현재가 = 42000;
-            const 평균단가 = 40000;
-            const 최고주가 = 50000;
-            const 합산매수금 = 5_000_000;
-            const 합산평가금 = 4_200_000;
-            const 예치금잔액 = remainCash;
+            const cur = nowQuote?.price ?? 0;
+            const high = nowQuote?.high ?? 0;
+            const drop = high ? ((cur - high) / high) * 100 : 0;
 
-            const 최고점기준낙폭 = ((현재가 - 최고주가) / 최고주가) * 100;
-            const 손익률 = ((현재가 - 평균단가) / 평균단가) * 100;
-            const 손익금 = 합산평가금 - 합산매수금;
-            const 합산손익률 = ((합산평가금 - 합산매수금) / 합산매수금) * 100;
-            const 예치금대비매수비율 = (합산매수금 / Math.max(예치금잔액, 1)) * 100;
-            const fmtWon = (n) => `${fmt(n)}원`;
+            // 이 페이지(잔여 기준)
+            const evalThis = remQtyThis * cur;
+            const profitThis = evalThis - remCostThis;
+            const roiThis = remCostThis ? (profitThis / remCostThis) * 100 : 0;
+            const avgCostThisDisp = remQtyThis > 0 ? (remCostThis / remQtyThis) : 0;
+
+            // 반대편 잔여 기준
+            const evalOther = remQtyOther * (otherNow || 0);
+
+            // 합산 — “전체 매수금액” 기준
+            const totalBuyAmt = buysThis.amt + buysOther.amt;
+            const totalEval = evalThis + evalOther;
+            const totalProfitVsBuy = totalEval - totalBuyAmt;
+            const totalROIVsBuy = totalBuyAmt ? (totalProfitVsBuy / totalBuyAmt) * 100 : 0;
+
+            // 예치금 = 납입금 + 매도금액
+            const deposit = Number(yearlyBudget || 0);
+            const totalSellAmt = sellAmtThis + sellAmtOther;
+            const cashBase = deposit + totalSellAmt;
+            const depositRemain = cashBase - totalBuyAmt;
+            const buyRatioToDeposit = cashBase > 0 ? (totalBuyAmt / cashBase) * 100 : 0;
 
             return (
               <div style={{ display: "grid", gap: 12, padding: 12 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
-                  <Cell title="현재가(평균단가)" value={`${fmtWon(현재가)} (${fmtWon(평균단가)})`} />
-                </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-                  <Cell title="최고주가" value={fmtWon(최고주가)} />
-                  <Cell title="최고점기준 낙폭" value={pct(최고점기준낙폭)} highlight={최고점기준낙폭 < 0} />
-                  <Cell title="손익률 및 손익금" value={`${손익률 >= 0 ? "▲" : "▼"} ${pct(Math.abs(손익률))} / ${fmtWon(Math.abs(손익금))}`} highlight={손익률 < 0} />
+                  <Cell title="현재가" value={`${Number(Math.round(cur)).toLocaleString("ko-KR")}원`} />
+                  <Cell title="최고가" value={`${Number(Math.round(high)).toLocaleString("ko-KR")}원`} />
+                  <Cell title="±최고점 기준 낙폭" value={sPct(drop)} color={colorPL(drop)} />
                 </div>
+
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-                  <Cell title="합산 매수금" value={fmtWon(합산매수금)} />
-                  <Cell title="합산 손익률" value={`${합산손익률 >= 0 ? "▲" : "▼"} ${pct(Math.abs(합산손익률))}`} highlight={합산손익률 < 0} />
-                  <Cell title="합산 평가금" value={fmtWon(합산평가금)} />
+                  <Cell title="평균단가" value={`${Number(Math.round(avgCostThisDisp)).toLocaleString("ko-KR")}원`} />
+                  <Cell title="손익률" value={sPct(roiThis)} color={colorPL(roiThis)} />
+                  <Cell
+                   title="누적평가금"
+                   value={`${Number(Math.round(evalThis)).toLocaleString("ko-KR")}원 (${sWon(profitThis)})`}
+                   color={colorPL(profitThis)}
+                 />
+
                 </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                  <Cell title="합산매수금" value={`${Number(Math.round(totalBuyAmt)).toLocaleString("ko-KR")}원`} />
+                  <Cell title="합산손익률" value={sPct(totalROIVsBuy)} color={colorPL(totalROIVsBuy)} />
+                  <Cell
+                    title="합산평가금"
+                    value={`${Number(Math.round(totalEval)).toLocaleString("ko-KR")}원 (${sWon(totalProfitVsBuy)})`}
+                    color={colorPL(totalProfitVsBuy)}
+                  />
+                </div>
+
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
-                  <Cell title="예치금잔액" value={fmtWon(예치금잔액)} />
-                  <Cell title="예치금대비 매수비율" value={pct(예치금대비매수비율)} />
+                  <Cell title="예치금잔액" value={`${Number(Math.round(depositRemain)).toLocaleString("ko-KR")}원`} />
+                  <Cell title="예치금대비 매수비율" value={`${buyRatioToDeposit.toFixed(2)}%`} />
                 </div>
               </div>
             );
@@ -359,14 +673,7 @@ export default function Stock2Page() {
 }
 
 /* 스타일 */
-const cardWrap = {
-  background: "#fff",
-  border: "1px solid #eee",
-  borderRadius: 12,
-  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-  overflow: "hidden",
-  marginBottom: 16,
-};
+const cardWrap = { background: "#fff", border: "1px solid #eee", borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", overflow: "hidden", marginBottom: 16 };
 const th = {
   background: "#f7f7f8",
   textAlign: "left",
@@ -376,30 +683,51 @@ const th = {
   padding: "10px 12px",
   borderBottom: "1px solid #e5e7eb",
   whiteSpace: "nowrap",
+  position: "sticky",
+  top: 0,
+  zIndex: 2,
+  boxShadow: "0 1px 0 rgba(0,0,0,0.04)",
 };
 const td = { padding: "10px 12px", fontSize: 14, color: "#111" };
 const tdRight = { ...td, textAlign: "right", whiteSpace: "nowrap" };
 const footNote = { padding: "8px 12px", fontSize: 12, color: "#777", borderTop: "1px solid #eee" };
-const input = { width: "100%", padding: "10px 12px", border: "1px solid #ddd", borderRadius: 10, fontSize: 14 };
-const btn = { padding: "10px 12px", borderWidth: 1, borderStyle: "solid", borderColor: "#ddd", borderRadius: 10, background: "#fff", cursor: "pointer", fontWeight: 600 };
+
+/* ✅ 입력 행: 반응형 그리드 & 입력/버튼 스타일 */
+const controlsGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+  gap: 12,
+  alignItems: "center",
+};
+const inputBase = {
+  minWidth: 0,
+  width: "100%",
+  padding: "10px 12px",
+  border: "1px solid #ddd",
+  borderRadius: 10,
+  fontSize: 14,
+  boxSizing: "border-box",
+};
+const buttonBase = {
+  height: 42,
+  minWidth: 120,
+  borderRadius: 10,
+  fontWeight: 700,
+  cursor: "pointer",
+  background: "#fff",
+  border: "1px solid #e5e7eb",
+  justifySelf: "stretch",
+};
+const buyBtn  = { ...buttonBase, borderColor: "#10b981", color: "#0f766e" };
+const sellBtn = { ...buttonBase, borderColor: "#ef4444", color: "#b91c1c" };
+
 const smallBtn = { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontWeight: 700, cursor: "pointer" };
 
-const inputGrid = { display: "grid", gridTemplateColumns: "180px 1fr 1fr 120px 120px", gap: 10, alignItems: "center" };
-
-function Cell({ title, value, highlight }) {
+function Cell({ title, value, color }) {
   return (
-    <div
-      style={{
-        border: "1px solid #e5e7eb",
-        borderRadius: 10,
-        padding: "12px 14px",
-        background: highlight ? "#fff5f5" : "#fff",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <div style={{ fontSize: 13, color: "#666", fontWeight: 600 }}>{title}</div>
-      </div>
-      <div style={{ fontSize: 18, fontWeight: 800 }}>{value}</div>
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "12px 14px", background: "#fff" }}>
+      <div style={{ fontSize: 13, color: "#666", fontWeight: 600, marginBottom: 6 }}>{title}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color }}>{value}</div>
     </div>
   );
 }

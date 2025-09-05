@@ -16,12 +16,15 @@
     "next": "^15.4.5",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "ws": "^8.18.3",
     "zustand": "^5.0.7"
   },
   "devDependencies": {
     "@ant-design/v5-patch-for-react-19": "^1.0.3",
     "@tailwindcss/postcss": "^4",
-    "tailwindcss": "^4"
+    "@types/react": "19.1.12",
+    "tailwindcss": "^4",
+    "typescript": "5.9.2"
   },
   "description": "This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).",
   "main": "index.js",

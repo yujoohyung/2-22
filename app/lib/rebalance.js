@@ -1,16 +1,14 @@
-// app/total/page.jsx
+// lib/rebalance.js
+export const toInt = (v) => Math.floor(Number(v || 0));
 
-/* ===== 리밸런싱 유틸 (총액/주수 누적) ===== */
-const toInt = (v) => Math.floor(Number(v || 0));
-
-function normalizeRb(raw = []) {
+export function normalizeRb(raw = []) {
   const map = new Map(); // date__symbol -> {date,symbol,amount,qty,price,type:"SELL"}
   for (const r of Array.isArray(raw) ? raw : []) {
     const date = r?.date;
     const symbol = r?.symbol;
     const qtyInt = toInt(r?.qty);
     const priceInt = toInt(r?.price);
-    const amtInt = priceInt * qtyInt; // 항상 가격*수량으로 재계산
+    const amtInt = priceInt * qtyInt;
     if (!date || !symbol || qtyInt <= 0 || amtInt <= 0) continue;
 
     const k = `${date}__${symbol}`;
@@ -22,7 +20,7 @@ function normalizeRb(raw = []) {
   return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
 }
 
-function addRb(prevArr, payload) {
+export function addRb(prevArr, payload) {
   const { date, symbol } = payload || {};
   const qtyInt = toInt(payload?.qty);
   const priceInt = toInt(payload?.price);
@@ -42,7 +40,7 @@ function addRb(prevArr, payload) {
   return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
 }
 
-function subRb(prevArr, payload) {
+export function subRb(prevArr, payload) {
   const { date, symbol } = payload || {};
   const qtyInt = toInt(payload?.qty);
   const priceInt = toInt(payload?.price);
@@ -64,23 +62,6 @@ function subRb(prevArr, payload) {
   return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
 }
 
-/* ===== input 스타일 ===== */
-const input = { width: "100%", padding: "10px 12px", border: "1px solid #ddd", borderRadius: 10, fontSize: 14 };
-
-/* ===== (선택) 메타데이터 ===== */
-export const metadata = { title: "Total" };
-
-/* ===== 페이지 컴포넌트 (기본 내보내기) ===== */
-export default function TotalPage() {
-  // 여기서 유틸을 사용할 수 있음 (예: normalizeRb(rows))
-  return (
-    <main style={{ padding: 16 }}>
-      <h1>총합 리밸런싱</h1>
-      <p>여기서 리밸런싱 유틸(normalizeRb / addRb / subRb)을 사용하세요.</p>
-
-      <div style={{ maxWidth: 420, marginTop: 16 }}>
-        <input placeholder="수량" style={input} />
-      </div>
-    </main>
-  );
-}
+export const input = {
+  width: "100%", padding: "10px 12px", border: "1px solid #ddd", borderRadius: 10, fontSize: 14
+};
