@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { calcRSI } from "@/lib/rsi";
+import { calcRSI } from "../../../../lib/rsi.js";
 
 export async function GET(req) {
   const url = new URL(req.url);
