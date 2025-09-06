@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { sendTelegram } from "@/lib/telegram";
+import { sendTelegram } from "../../../../lib/telegram.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

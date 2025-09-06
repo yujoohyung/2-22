@@ -1,9 +1,9 @@
 // app/layout.js
 import "@ant-design/v5-patch-for-react-19";
 import { Geist, Geist_Mono } from "next/font/google";
-import RebalanceBus from "../components/RebalanceBus";
-import NavBar from "../components/NavBar";
-import UserBar from "../components/UserBar";
+import RebalanceBus from "../../components/RebalanceBus";
+import NavBar from "../../components/NavBar";
+import UserBar from "../../components/UserBar";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
