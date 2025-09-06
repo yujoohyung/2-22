@@ -8,6 +8,7 @@ import { decideBuyLevel, computeBasketQuantities } from "../../../../lib/formula
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+export async function GET(req) { return POST(req); }   // ← 추가
 export async function POST(req) {
   try {
     // body의 symbol은 무시(설정의 main_symbol 사용)

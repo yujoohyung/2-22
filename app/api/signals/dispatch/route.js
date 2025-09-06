@@ -3,6 +3,7 @@ import { sendTelegram } from "../../../../lib/telegram.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export async function GET(req) { return POST(req); }   // ← 추가
 
 function toKST(d) {
   return new Date(new Date(d).getTime() + 9 * 60 * 60 * 1000);
