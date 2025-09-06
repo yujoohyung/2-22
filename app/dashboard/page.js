@@ -178,26 +178,41 @@ export default function DashboardPage() {
     })();
   }, []);
 
-  /** 현재가/고가 실시간(SSE) — 실패 시 REST 폴백 */
+  /** 현재가/고가 실시간(SSE) — 실패 시 REST 폴백(쿨다운 포함) */
   const [nowQuote, setNowQuote] = useState(null);
 
   useEffect(() => {
     if (!isDailyReady) return;
     let es = null, fallbackTimer = null, inFlight = false;
+    let cooldownUntil = 0; // EGW00133 등 에러 시 쿨다운
 
     const safeFetchNow = async () => {
       if (inFlight) return;
+      if (Date.now() < cooldownUntil) return; // 쿨다운 중
       inFlight = true;
+
       const ctrl = new AbortController();
       const to = setTimeout(() => ctrl.abort(), 7000);
       try {
         const res = await fetch(`/api/kis/now?code=${CODE}`, { signal: ctrl.signal, cache: "no-store" });
-        if (!res.ok) { await res.text().catch(() => ""); return; }
-        let d = null; try { d = await res.json(); } catch { return; }
+        if (!res.ok) {
+          const txt = await res.text().catch(() => "");
+          console.warn("now fetch failed:", res.status, txt);
+          if (res.status === 403 && /EGW00133/.test(txt)) cooldownUntil = Date.now() + 70_000; // 70초 쉬기
+          return;
+        }
+        const d = await res.json().catch(() => null);
         if (!d || d.ok === false) return;
         const o = d.output || {};
-        setNowQuote({ price: Number(o.stck_prpr || 0), high: Number(o.stck_hgpr || 0) });
-      } finally { clearTimeout(to); inFlight = false; }
+        const p = Number(o.stck_prpr || 0);
+        const h = Number(o.stck_hgpr || 0);
+        if (p > 0) setNowQuote({ price: p, high: h });
+      } catch (e) {
+        console.warn("now fetch error:", e);
+      } finally {
+        clearTimeout(to);
+        inFlight = false;
+      }
     };
 
     try {
@@ -205,16 +220,24 @@ export default function DashboardPage() {
       es.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.type === "tick") {
-            setNowQuote({ price: Number(msg.price || 0), high: Number(msg.high || 0) });
+          if (msg?.type === "tick") {
+            const price = Number(msg.price || 0);
+            const high  = Number(msg.high || 0);
+            if (price > 0) setNowQuote({ price, high });
           }
-        } catch {}
+        } catch { /* noop */ }
       };
-      es.onerror = () => { try { es.close(); } catch {}; fallbackTimer = setInterval(safeFetchNow, 2000); };
+      es.onerror = () => {
+        try { es.close(); } catch {}
+        if (!fallbackTimer) fallbackTimer = setInterval(safeFetchNow, 2500);
+      };
     } catch {
-      fallbackTimer = setInterval(safeFetchNow, 2000);
+      if (!fallbackTimer) fallbackTimer = setInterval(safeFetchNow, 2500);
     }
-    return () => { try { es && es.close(); } catch {}; if (fallbackTimer) clearInterval(fallbackTimer); };
+    return () => {
+      try { es && es.close(); } catch {}
+      if (fallbackTimer) clearInterval(fallbackTimer);
+    };
   }, [isDailyReady]);
 
   /** now 가격 캐시: 합산 계산용으로 localStorage 저장 */
