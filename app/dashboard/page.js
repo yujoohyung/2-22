@@ -385,7 +385,13 @@ export default function DashboardPage() {
     saveTx({ _txid, _ts: Date.now(), type: "BUY", date, symbol: SYMBOL, price, qty });
     setPriceInput(""); setQtyInput("");
     requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
+    fetch("/api/trades/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol: "nasdaq2x", date, price, qty, side: "BUY" }),
+    }).catch(()=>{});
   };
+
   const handleSell = () => {
     const parsed = parseInputs(); if (!parsed) return;
     const { price, qty } = parsed;
@@ -394,7 +400,13 @@ export default function DashboardPage() {
     upsertRebalance({ date, price, qty });
     saveTx({ _txid, _ts: Date.now(), type: "SELL", date, symbol: SYMBOL, price, qty });
     setPriceInput(""); setQtyInput("");
+    fetch("/api/trades/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol: "nasdaq2x", date, price, qty, side: "SELL" }),
+    }).catch(()=>{});
   };
+  
   const undoTx = (row) => {
     setTrades(SYMBOL, (trades[SYMBOL] || []).filter((t) => t._txid !== row._txid));
     if (row.type === "SELL") deleteFromRebalance({ date: row.date, price: row.price, qty: row.qty });

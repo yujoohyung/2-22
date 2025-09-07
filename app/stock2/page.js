@@ -390,7 +390,13 @@ export default function Stock2Page() {
     saveTx({ _txid, _ts: Date.now(), type: "BUY", date: inputDate, symbol: SYMBOL, price, qty });
     setPriceInput(""); setQtyInput("");
     requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
+    fetch("/api/trades/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol: "bigtech2x", date, price, qty, side: "BUY" }),
+    }).catch(()=>{});
   };
+  
   const handleSell = () => {
     const parsed = parseInputs(); if (!parsed) return;
     const { price, qty } = parsed;
@@ -400,6 +406,11 @@ export default function Stock2Page() {
     saveTx({ _txid, _ts: Date.now(), type: "SELL", date: inputDate, symbol: SYMBOL, price, qty });
     setPriceInput(""); setQtyInput("");
     requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
+    fetch("/api/trades/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol: "bigtech2x", date, price, qty, side: "SELL" }),
+    }).catch(()=>{});
   };
   const undoTx = (row) => {
     // trades 테이블에서 제거
