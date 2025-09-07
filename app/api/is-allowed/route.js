@@ -1,31 +1,36 @@
 import { createClient } from "@supabase/supabase-js";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function POST(req) {
   try {
     const { email } = await req.json();
     if (!email) {
-      return new Response(JSON.stringify({ allowed:false, error:"no-email" }), { status: 400 });
+      return new Response(JSON.stringify({ allowed: false, error: "missing email" }), {
+        status: 400, headers: { "content-type": "application/json; charset=utf-8" },
+      });
     }
 
-    const supabaseAdmin = createClient(
+    const supa = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE  // RLS 우회 (서버 전용)
+      process.env.SUPABASE_SERVICE_ROLE
     );
 
-    // citext이면 대소문자 자동 무시, text면 lower 비교
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supa
       .from("allowed_emails")
-      .select("email")
-      .eq("email", email.trim())
-      .limit(1);
+      .select("id")
+      .eq("email", email)
+      .maybeSingle();
 
-    if (error) {
-      return new Response(JSON.stringify({ allowed:false, error: error.message }), { status: 500 });
-    }
+    if (error) throw error;
 
-    const allowed = Array.isArray(data) && data.length > 0;
-    return new Response(JSON.stringify({ allowed }), { status: 200 });
+    return new Response(JSON.stringify({ allowed: !!data }), {
+      status: 200, headers: { "content-type": "application/json; charset=utf-8" },
+    });
   } catch (e) {
-    return new Response(JSON.stringify({ allowed:false, error: e.message }), { status: 500 });
+    return new Response(JSON.stringify({ allowed: false, error: String(e.message || e) }), {
+      status: 500, headers: { "content-type": "application/json; charset=utf-8" },
+    });
   }
 }

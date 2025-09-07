@@ -4,69 +4,78 @@ import { useState } from "react";
 
 export default function SignupPage() {
   const [adminCode, setAdminCode] = useState("");
-  const [email, setEmail]         = useState("");
-  const [password, setPassword]   = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const handleSignup = async () => {
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    if (!adminCode || !email || !password) {
+      alert("관리자 코드 / 이메일 / 비밀번호를 모두 입력하세요.");
+      return;
+    }
+    setBusy(true);
     try {
       const res = await fetch("/api/signup", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ adminCode, email: email.trim(), password }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        alert(data.error || "회원가입 실패");
-        return;
-      }
-      alert("회원가입 완료! 로그인 페이지로 이동합니다.");
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || "회원가입 실패");
+
+      alert("가입 완료! 이제 로그인해 주세요.");
       window.location.assign("/login");
     } catch (e) {
-      alert("네트워크 오류");
+      alert(String(e.message || e));
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <div style={{ padding: 50, maxWidth: 420, margin: "100px auto", border: "1px solid #ddd", borderRadius: 8 }}>
-      <h1 style={{ textAlign: "center", marginBottom: 30 }}>회원가입</h1>
-
-      <label style={{ display:"block", fontSize:12, color:"#666", marginBottom:6 }}>관리자 코드</label>
-      <input
-        type="password"
-        placeholder="관리자 코드"
-        value={adminCode}
-        onChange={(e)=>setAdminCode(e.target.value)}
-        style={{ width:"100%", padding:10, marginBottom:12 }}
-      />
-
-      <label style={{ display:"block", fontSize:12, color:"#666", marginBottom:6 }}>이메일</label>
-      <input
-        type="email"
-        placeholder="you@example.com"
-        value={email}
-        onChange={(e)=>setEmail(e.target.value)}
-        style={{ width:"100%", padding:10, marginBottom:12 }}
-      />
-
-      <label style={{ display:"block", fontSize:12, color:"#666", marginBottom:6 }}>비밀번호</label>
-      <input
-        type="password"
-        placeholder="비밀번호"
-        value={password}
-        onChange={(e)=>setPassword(e.target.value)}
-        style={{ width:"100%", padding:10, marginBottom:20 }}
-      />
-
-      <button
-        onClick={handleSignup}
-        style={{ width:"100%", padding:12, background:"#10b981", color:"#fff", border:"none", borderRadius:4, fontWeight:700 }}
-      >
-        가입하기
-      </button>
-
-      <p style={{ marginTop: 16, textAlign: "center" }}>
-        이미 계정이 있으신가요? <a href="/login">로그인</a>
-      </p>
+    <div style={{ padding: 24, maxWidth: 420, margin: "80px auto",
+      border: "1px solid #ddd", borderRadius: 12, background: "#fff" }}>
+      <h1 style={{ textAlign: "center", marginBottom: 20 }}>회원가입</h1>
+      <form onSubmit={onSubmit} style={{ display: "grid", gap: 10 }}>
+        <input
+          type="password"
+          placeholder="관리자 코드"
+          value={adminCode}
+          onChange={(e) => setAdminCode(e.target.value)}
+          style={ipt}
+          autoComplete="off"
+        />
+        <input
+          type="email"
+          placeholder="이메일"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          style={ipt}
+          autoComplete="off"
+        />
+        <input
+          type="password"
+          placeholder="비밀번호"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          style={ipt}
+          autoComplete="new-password"
+        />
+        <button
+          type="submit"
+          disabled={busy}
+          style={{ ...btn, background: "#111827", color: "#fff" }}
+        >
+          {busy ? "처리 중..." : "가입하기"}
+        </button>
+        <a href="/login" style={{ textAlign: "center", marginTop: 6 }}>
+          이미 계정이 있으신가요? 로그인
+        </a>
+      </form>
     </div>
   );
 }
+
+const ipt = { width: "100%", padding: "12px 14px", border: "1px solid #ddd", borderRadius: 10, fontSize: 14 };
+const btn = { width: "100%", padding: "12px 14px", border: "1px solid #111827", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: "pointer" };
