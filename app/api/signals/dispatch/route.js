@@ -1,46 +1,22 @@
 // app/api/signals/dispatch/route.js
 import { createClient } from "@supabase/supabase-js";
+import { sendTelegram } from "../../../../lib/telegram.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// KST 포맷  "YYYY-MM-DD HH시 mm분"
-function kstNowText(d = new Date()) {
-  const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
-  const y = kst.getUTCFullYear();
-  const m = String(kst.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(kst.getUTCDate()).padStart(2, "0");
-  const hh = String(kst.getUTCHours()).padStart(2, "0");
-  const mm = String(kst.getUTCMinutes()).padStart(2, "0");
-  return `${y}-${m}-${dd} ${hh}시 ${mm}분`;
+// KST 표기용
+function formatKST(ts = new Date()) {
+  const k = new Date(ts.getTime() + 9 * 60 * 60 * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  const y = k.getUTCFullYear();
+  const m = p(k.getUTCMonth() + 1);
+  const d = p(k.getUTCDate());
+  const hh = p(k.getUTCHours());
+  const mm = p(k.getUTCMinutes());
+  return `${y}-${m}-${d} ${hh}시 ${mm}분`;
 }
 
-async function sendTelegram(text) {
-  const bot = process.env.TELEGRAM_BOT_TOKEN;
-  const chat = process.env.TELEGRAM_CHAT_ID_BROADCAST;
-  if (!bot || !chat) throw new Error("TELEGRAM env missing");
-
-  const url = `https://api.telegram.org/bot${bot}/sendMessage`;
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chat,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-    }),
-  });
-  if (!r.ok) {
-    const t = await r.text().catch(() => "");
-    throw new Error("telegram send failed: " + t);
-  }
-}
-
-/**
- * 미발송(alerts.sent = false) 항목을 읽어서
- * 텔레그램으로 전송 후 sent=true로 업데이트
- */
 export async function POST() {
   try {
     const supa = createClient(
@@ -48,39 +24,62 @@ export async function POST() {
       process.env.SUPABASE_SERVICE_ROLE
     );
 
-    // 아직 안 보낸 알림 수집
-    const { data: rows, error } = await supa
+    // 1) 아직 안 보낸 알림 불러오기
+    const { data: alerts, error: ae } = await supa
       .from("alerts")
-      .select("id, symbol, rsi, level, message, created_at, sent")
+      .select("*")
       .eq("sent", false)
-      .order("created_at", { ascending: true })
-      .limit(200);
+      .order("created_at", { ascending: true });
+    if (ae) throw ae;
 
-    if (error) throw error;
-    if (!rows || rows.length === 0) {
-      return Response.json({ ok: true, sent: 0 });
+    if (!alerts?.length) {
+      return new Response(JSON.stringify({ ok: true, sent: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
     }
 
-    // 간단 집계: 같은 시간대라도 일괄 묶어 한 번에 보냄
-    const header = kstNowText();
-    const body = rows.map(r => r.message || `${r.symbol} / ${r.level}`).join("\n");
-    const text = `${header}\n${body}`;
+    // 2) 수신 chat_id: settings 테이블 or ENV
+    let chatId = process.env.TELEGRAM_CHAT_ID_BROADCAST || null;
+    if (!chatId) {
+      const { data: sets } = await supa
+        .from("settings")
+        .select("telegram_chat_id")
+        .limit(1)
+        .maybeSingle();
+      chatId = sets?.telegram_chat_id ?? null;
+    }
+    if (!chatId) throw new Error("telegram chat_id not configured");
 
-    await sendTelegram(text);
+    // 3) 메시지 구성 (단순 그룹핑)
+    const kstNow = formatKST();
+    const lines = [`${kstNow}`];
+    for (const a of alerts) {
+      lines.push(
+        `${a.symbol} | RSI ${Number(a.rsi).toFixed(2)} | ${a.level}\n${a.message}`
+      );
+    }
+    const text = lines.join("\n");
 
-    // 전송 완료 표시
-    const ids = rows.map(r => r.id);
-    const { error: upErr } = await supa.from("alerts").update({ sent: true }).in("id", ids);
-    if (upErr) throw upErr;
+    // 4) 발송
+    await sendTelegram(text, chatId);
 
-    return Response.json({ ok: true, sent: rows.length });
+    // 5) sent=true 마킹
+    const ids = alerts.map((a) => a.id);
+    const { error: ue } = await supa
+      .from("alerts")
+      .update({ sent: true })
+      .in("id", ids);
+    if (ue) throw ue;
+
+    return new Response(JSON.stringify({ ok: true, sent: ids.length }), {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
   } catch (e) {
     return new Response(
       JSON.stringify({ ok: false, error: String(e.message || e) }),
-      { status: 500 }
+      { status: 500, headers: { "content-type": "application/json; charset=utf-8" } }
     );
   }
 }
-
-// ✅ GET은 내보내지 않습니다. (중복 선언 방지)
-// 필요하면 크론 래퍼에서 POST로 이 엔드포인트를 호출하세요.
