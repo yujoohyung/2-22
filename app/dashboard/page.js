@@ -390,6 +390,12 @@ export default function DashboardPage() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ symbol: "nasdaq2x", date, price, qty, side: "BUY" }),
     }).catch(()=>{});
+    // BUY 뒤에 추가 (성공/실패와 관계없이 UI는 그대로)
+    void fetch("/api/trades", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ symbol: "dashboard", date, price, qty, side: "BUY" })
+    }).catch(()=>{});
   };
 
   const handleSell = () => {
@@ -404,6 +410,11 @@ export default function DashboardPage() {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ symbol: "nasdaq2x", date, price, qty, side: "SELL" }),
+    }).catch(()=>{});
+    void fetch("/api/trades", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ symbol: "dashboard", date, price, qty, side: "SELL" })
     }).catch(()=>{});
   };
   

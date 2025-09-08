@@ -371,6 +371,11 @@ export default function Stock2Page() {
     await saveToServer({ side: "BUY", date, price, qty }); // ← 서버 저장(선택)
     setPriceInput(""); setQtyInput("");
     requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
+    void fetch("/api/trades", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ symbol: "stock2", date, price, qty, side: "BUY" })
+    }).catch(()=>{});
   };
   const handleSell = async () => {
     const parsed = parseInputs(); if (!parsed) return;
@@ -381,6 +386,11 @@ export default function Stock2Page() {
     saveTx({ _txid, _ts: Date.now(), type: "SELL", date, symbol: SYMBOL, price, qty });
     await saveToServer({ side: "SELL", date, price, qty }); // ← 서버 저장(선택)
     setPriceInput(""); setQtyInput("");
+    void fetch("/api/trades", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ symbol: "stock2", date, price, qty, side: "SELL" })
+    }).catch(()=>{});
   };
   const undoTx = (row) => {
     setTrades(SYMBOL, (trades[SYMBOL] || []).filter((t) => t._txid !== row._txid));
