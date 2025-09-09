@@ -5,15 +5,7 @@ import { sendTelegram } from "../../../../lib/telegram.js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// 표시명 매핑(A/B → 한글)
-const DISPLAY_MAP = {
-  A: "나스닥100 2x",
-  B: "빅테크7 2x",
-  NASDAQ2X: "나스닥100 2x",
-  BIGTECH2X: "빅테크7 2x",
-};
-
-// KST 표기
+/** 한국시간 포맷 */
 function formatKST(ts = new Date()) {
   const k = new Date(ts.getTime() + 9 * 60 * 60 * 1000);
   const p = (n) => String(n).padStart(2, "0");
@@ -25,50 +17,110 @@ function formatKST(ts = new Date()) {
   return `${y}-${m}-${d} ${hh}시 ${mm}분`;
 }
 
-// 금액 → 주수 반올림
-const toQty = (krw, price) =>
-  Number.isFinite(krw) && Number.isFinite(price) && price > 0
-    ? Math.round(krw / price)
-    : 0;
+/** 이메일 → 짧은 표시명 */
+const shortName = (email) => (email ? String(email).split("@")[0] : "사용자");
 
-// 대시보드에서 쓰던 분배/보정 로직 그대로 재현
-function calcStageKRWPerSymbol(yearlyBudget, basket, stageIndex /*0,1,2*/) {
-  // 기본 가중치(60:40)
-  const weights = {};
-  let sumW = 0;
-  for (const b of basket) {
-    weights[b.symbol] = Number(b.weight || 0);
-    sumW += weights[b.symbol];
+/** 숫자 포맷 */
+const fmt = (n) => Number(n ?? 0).toLocaleString("ko-KR");
+
+/** 사용자 보유수량 집계: user_trades에서 (BUY-SELL) */
+async function loadUserPositions(supa, symbols) {
+  // 트레이드 전부 가져와도 유저 2~4명 규모면 충분
+  const { data: rows, error } = await supa
+    .from("user_trades")
+    .select("user_id, symbol, side, qty");
+  if (error) throw error;
+
+  const pos = new Map(); // key: `${user_id}__${symbol}` -> remQty
+  for (const r of rows || []) {
+    if (!symbols.includes(r.symbol)) continue;
+    const key = `${r.user_id}__${r.symbol}`;
+    const prev = pos.get(key) || 0;
+    const q = Number(r.qty || 0);
+    pos.set(key, prev + (r.side === "BUY" ? q : -q));
   }
-  if (!sumW) return {};
-
-  // 월예상 매입금
-  const monthly = {};
-  for (const s of Object.keys(weights)) {
-    monthly[s] = Math.round((yearlyBudget * (weights[s] / sumW)) / 12);
-  }
-
-  // 단계 비율
-  const sRatios = [0.14, 0.26, 0.60];
-  const factor = 0.92;
-  const base = {};
-  for (const s of Object.keys(monthly)) {
-    base[s] = Math.round(monthly[s] * sRatios[stageIndex] * factor);
-  }
-
-  // 보정 (NASDAQ 1.6, BIGTECH 0.4과 동일한 효과: 가중 60:40 가정에서 A:1.6, B:0.4)
-  const adjusted = {};
-  // 기준: basket[0] = A(나스닥), basket[1] = B(빅테크)라는 가정
-  const sA = basket[0]?.symbol, sB = basket[1]?.symbol;
-  if (sA) adjusted[sA] = Math.round(base[sA] * 1.6);
-  if (sB) adjusted[sB] = Math.round(base[sB] * 0.4);
-
-  // 나머지 심볼 있으면 보정 없이 base 유지
-  for (const s of Object.keys(base)) {
-    if (!(s in adjusted)) adjusted[s] = base[s];
-  }
-  return adjusted;
+  return pos; // remQty(음수면 0으로 다룸)
 }
+
+/** Supabase Auth 사용자 목록 (id -> email) */
+async function loadUsersEmailMap(supa) {
+  // service role로만 가능
+  const { data, error } = await supa.auth.admin.listUsers();
+  if (error) throw error;
+  const map = new Map();
+  for (const u of data?.users || []) {
+    if (u?.id) map.set(u.id, u.email || "");
+  }
+  return map;
+}
+
+/** 최신 가격 맵 (심볼 -> close) */
+async function loadPriceMap(supa, symbols) {
+  const map = new Map();
+  for (const s of symbols) {
+    const { data: p } = await supa
+      .from("prices")
+      .select("close")
+      .eq("symbol", s)
+      .order("ts", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    map.set(s, Number(p?.close || 0));
+  }
+  return map;
+}
+
+/** 사용자의 단계별 예산(원) 결정
+ * - settings.stage_amounts_krw가 있으면 그걸 1/2/3단계로 사용
+ * - 없으면 deposit * [0.06, 0.06, 0.08] (예시) 로 Fallback
+ */
+function getStageBudgetKRW(settingsRow, levelIndex) {
+  const L = Number(levelIndex); // 0,1,2
+  if (Array.isArray(settingsRow?.stage_amounts_krw)) {
+    const v = Number(settingsRow.stage_amounts_krw[L] ?? 0);
+    return Number.isFinite(v) ? v : 0;
+  }
+  // fallback: deposit * ladder (기본)
+  const dep = Number(settingsRow?.deposit || 0);
+  const ladder = (settingsRow?.ladder?.buy_pct) || [0.06, 0.06, 0.08];
+  const pct = Number(ladder[L] ?? 0);
+  return Math.round(dep * pct);
+}
+
+/** (매수) 사용자별 바스켓 수량 계산 */
+function computeUserBuyPlan(settingsRow, levelIndex, priceMap) {
+  const stageKRW = getStageBudgetKRW(settingsRow, levelIndex); // 단계별 총원
+  const basket = Array.isArray(settingsRow?.basket) ? settingsRow.basket : [];
+  if (!basket.length || stageKRW <= 0) return [];
+
+  // 가중치 합
+  const wsum = basket.reduce((s, b) => s + Number(b.weight || 0), 0) || 1;
+
+  const plans = [];
+  for (const b of basket) {
+    const sym = b.symbol;
+    const w = Number(b.weight || 0) / wsum;
+    const krw = Math.round(stageKRW * w);
+    const px = Number(priceMap.get(sym) || 0);
+    const qty = px > 0 ? Math.max(0, Math.round(krw / px)) : 0;
+    plans.push({ symbol: sym, krw, price: px, qty });
+  }
+  return plans;
+}
+
+/** (매도) 사용자별 잔여*0.3 매도 수량 계산 */
+function computeUserSellPlan(userId, symbols, posMap) {
+  const out = [];
+  for (const sym of symbols) {
+    const key = `${userId}__${sym}`;
+    const rem = Math.max(0, Number(posMap.get(key) || 0));
+    const sellQty = rem > 0 ? Math.max(1, Math.floor(rem * 0.3)) : 0;
+    if (sellQty > 0) out.push({ symbol: sym, sellQty, rem });
+  }
+  return out;
+}
+
+export async function GET() { return POST(); }
 
 export async function POST() {
   try {
@@ -77,24 +129,7 @@ export async function POST() {
       process.env.SUPABASE_SERVICE_ROLE
     );
 
-    // 전역 설정(basket, rsi, etc.)
-    const { data: sets } = await supa.from("settings").select("*").limit(1).maybeSingle();
-    if (!sets) {
-      return new Response(JSON.stringify({ ok: false, error: "settings not found" }), { status: 400 });
-    }
-    const basket = Array.isArray(sets.basket) ? sets.basket : [];
-    // 가격 최신치
-    const latestPrice = {};
-    for (const { symbol } of basket) {
-      const { data: p } = await supa
-        .from("prices").select("close")
-        .eq("symbol", symbol)
-        .order("ts", { ascending: false })
-        .limit(1).maybeSingle();
-      latestPrice[symbol] = Number(p?.close || 0);
-    }
-
-    // 아직 안 보낸 전역 알림(매수/매도 신호)
+    // A) 아직 안 보낸 알림들(전역) — 매수/매도 신호 소스
     const { data: alerts, error: ae } = await supa
       .from("alerts")
       .select("*")
@@ -102,136 +137,127 @@ export async function POST() {
       .order("created_at", { ascending: true });
     if (ae) throw ae;
 
+    // 알림 없으면 조용히 종료
     if (!alerts?.length) {
-      return new Response(JSON.stringify({ ok: true, sent: 0, note: "no pending alerts" }), { status: 200 });
+      return new Response(JSON.stringify({ ok: true, sent: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
     }
 
-    // 개인 설정(연 예치금 등) 전부 불러오기
-    const { data: userSets, error: ue0 } = await supa
-      .from("user_settings")
-      .select("*"); // service role이므로 전체 조회 가능(RLS 무시)
-    if (ue0) throw ue0;
+    // B) 모든 사용자 settings (개인별 예치금/바스켓/단계예산/채널 ID)
+    const { data: settingsRows, error: se } = await supa
+      .from("settings")
+      .select("*");
+    if (se) throw se;
+    const users = settingsRows || [];
+    if (!users.length) throw new Error("no settings rows");
 
-    // 유저 이메일(닉네임 없을 때 사용)
-    const emails = {};
-    try {
-      const admin = supa.auth.admin;
-      let page = 1, all = [];
-      for (;;) {
-        const { data } = await admin.listUsers({ page, perPage: 1000 });
-        all = all.concat(data?.users || []);
-        if (!data?.users?.length) break;
-        page++;
-      }
-      for (const u of all) emails[u.id] = u.email || "";
-    } catch {
-      // 이메일 조회 실패 시 닉네임만 사용
-    }
+    // C) 바스켓에 등장하는 모든 심볼 수집 → 가격맵
+    const allSymbols = Array.from(
+      new Set(
+        users.flatMap((u) =>
+          (Array.isArray(u?.basket) ? u.basket : []).map((b) => b.symbol)
+        )
+      )
+    );
+    const priceMap = await loadPriceMap(supa, allSymbols);
 
-    // 개인 보유수량 집계(매도 30% 계산용)
-    const { data: allTrades } = await supa.from("user_trades").select("*"); // service role
-    const pos = new Map(); // key: `${user_id}__${symbol}` -> netQty
-    for (const t of allTrades || []) {
-      const k = `${t.user_id}__${t.symbol}`;
-      const prev = pos.get(k) || 0;
-      const delta = t.side === "SELL" ? -Number(t.qty || 0) : Number(t.qty || 0);
-      pos.set(k, prev + delta);
-    }
+    // D) user_trades → 보유수량(잔여) 맵 + id→email 맵
+    const posMap = await loadUserPositions(supa, allSymbols);
+    const id2email = await loadUsersEmailMap(supa);
 
-    // 텔레그램 발송 대상(채널 1곳)
+    // E) 알림 묶음 파악: (간단히) 최신 레벨/RSI/created_at
+    //   - 같은 패스에서 여러 심볼이 insert 되었을 가능성 → level/created_at 기준으로 메시지 제목 구성
+    const top = alerts[0];
+    const rsiVal = Number(top?.rsi ?? 0);
+    const levelText = String(top?.level || "");
+    const isSellSignal = /매도|리밸/i.test(levelText); // '매도' or '리밸런싱' 등
+
+    // F) 발송 대상 chat_id (채널 하나로 방송)
     let chatId = process.env.TELEGRAM_CHAT_ID_BROADCAST || null;
     if (!chatId) {
-      // settings.telegram_chat_id fallback
-      const { data: s2 } = await supa.from("settings").select("telegram_chat_id").limit(1).maybeSingle();
-      chatId = s2?.telegram_chat_id ?? null;
+      // fallback: 첫 사용자 settings.telegram_chat_id
+      chatId = users.find((u) => u.telegram_chat_id)?.telegram_chat_id ?? null;
     }
     if (!chatId) throw new Error("telegram chat_id not configured");
 
-    // === 메시지 구성 ===
-    const kstNow = formatKST();
-    const bigBlocks = []; // 사용자별 블록들을 모아서 하나의 텍스트로 보냄
+    // G) 메시지 만들기
+    const lines = [];
+    lines.push(`${formatKST()}`);
 
-    // alerts를 유형별로 판단
-    const isBuyAlert = (a) => /단계/.test(a.level);                 // "1단계/2단계/3단계"
-    const isSellAlert = (a) => /매도|리밸런싱/i.test(a.level);      // "매도/리밸런싱"
+    if (!isSellSignal) {
+      // ===== 매수 신호 =====
+      lines.push(`RSI ${rsiVal.toFixed(2)} / ${levelText} (개인 예치금 기준 수량)`);
 
-    // 가장 최신 알림 기준으로 RSI/단계를 잡되, 여러 건이면 모두 표기
-    for (const us of userSets || []) {
-      if (us.notify_enabled === false) continue;
+      // levelIndex: '1단계','2단계','3단계' → 0/1/2
+      const levelIndex =
+        /1/.test(levelText) ? 0 : /2/.test(levelText) ? 1 : /3/.test(levelText) ? 2 : 0;
 
-      const userId = us.user_id;
-      const nickname = us.nickname || emails[userId] || "(무명)";
-      const budget = Number(us.yearly_budget || 0);
+      for (const u of users) {
+        const uname = shortName(u.user_email);
+        const plans = computeUserBuyPlan(u, levelIndex, priceMap);
 
-      const lines = [];
-      lines.push(`[${nickname}] ${kstNow}`);
-      lines.push(`예치금(연) ${Number(Math.round(budget)).toLocaleString("ko-KR")}원`);
+        // 심볼 → 보기좋은 라벨(원하면 바꿔도 됨)
+        const label = (s) =>
+          s === "A" ? "나스닥100 2x" :
+          s === "B" ? "빅테크7 2x"   :
+          s; // 그대로
 
-      // 각 alert 처리
-      for (const a of alerts) {
-        // BUY: 개인 예치금 기준으로 “해당 단계” 금액 → 심볼별 금액 → 주수 반올림
-        if (isBuyAlert(a)) {
-          const stageIdx = Math.max(0, Math.min(2, Number(String(a.level).replace(/\D/g, "")) - 1));
-          const stageKRW = calcStageKRWPerSymbol(budget, basket, stageIdx);
-
-          // 주수 계산
-          const parts = [];
-          for (const { symbol } of basket) {
-            const disp = DISPLAY_MAP[symbol] || symbol;
-            const price = latestPrice[symbol] || 0;
-            const qty = toQty(stageKRW[symbol] || 0, price);
-            if (qty > 0) parts.push(`${disp} ${qty}주 매수`);
-          }
-
-          if (parts.length > 0) {
-            const rsiTxt = Number(a.rsi ?? 0) ? Number(a.rsi).toFixed(2) : "-";
-            lines.push(`RSI ${rsiTxt} / 매수 ${stageIdx + 1}단계`);
-            for (const p of parts) lines.push(p);
-          }
+        const parts = [];
+        for (const p of plans) {
+          parts.push(`${label(p.symbol)} ${fmt(p.qty)}주`);
         }
-
-        // SELL: 개인 보유의 30% (각 심볼별) → 1주 이상만 표기
-        if (isSellAlert(a)) {
-          lines.push(`최고가 / 매도`);
-          for (const { symbol } of basket) {
-            const disp = DISPLAY_MAP[symbol] || symbol;
-            const k = `${userId}__${symbol}`;
-            const net = Math.max(0, Number(pos.get(k) || 0));
-            const sellQty = net > 0 ? Math.max(1, Math.floor(net * 0.3)) : 0;
-            if (sellQty > 0) lines.push(`${disp} ${sellQty}주(30%) 매도`);
-          }
-        }
+        const dep = Number(u.deposit || 0);
+        lines.push(`- ${uname} / 1년 납입금: ${fmt(dep)}원 / ${parts.join(" / ")}`);
       }
+    } else {
+      // ===== 매도 신호 =====
+      lines.push(`(매도 신호) ${levelText}`);
 
-      // 실제로 개인에게 줄 줄이 하나라도 생겼다면 블록 추가
-      if (lines.length > 2) {
-        bigBlocks.push(lines.join("\n"));
+      // 각 사용자별로 잔여*0.3
+      for (const u of users) {
+        const uname = shortName(u.user_email);
+        const sellPlan = computeUserSellPlan(u.user_id || "", allSymbols, posMap);
+
+        if (!sellPlan.length) {
+          lines.push(`- ${uname} / 보유수량 없음`);
+          continue;
+        }
+
+        // 심볼 라벨
+        const label = (s) =>
+          s === "A" ? "나스닥100 2x" :
+          s === "B" ? "빅테크7 2x"   :
+          s;
+
+        const parts = [];
+        for (const sp of sellPlan) {
+          parts.push(`${label(sp.symbol)} ${fmt(sp.sellQty)}주(잔여 ${fmt(sp.rem)}주)`);
+        }
+        lines.push(`- ${uname} / ${parts.join(" / ")}`);
       }
     }
 
-    if (bigBlocks.length === 0) {
-      // 개인화 결과가 없어도 alerts는 전역적으로 처리 완료로 마킹(중복 방지)
-      const ids = alerts.map((a) => a.id);
-      await supa.from("alerts").update({ sent: true }).in("id", ids);
-      return new Response(JSON.stringify({ ok: true, sent: 0, note: "no per-user messages" }), { status: 200 });
-    }
+    const text = lines.join("\n");
 
-    // 채널로 한 번에 보내기(사용자 블록 사이 빈줄)
-    const text = bigBlocks.join("\n\n");
+    // H) 발송
     await sendTelegram(text, chatId);
 
-    // 전역 알림 sent=true
+    // I) sent=true 마킹
     const ids = alerts.map((a) => a.id);
-    await supa.from("alerts").update({ sent: true }).in("id", ids);
+    const { error: ue } = await supa.from("alerts").update({ sent: true }).in("id", ids);
+    if (ue) throw ue;
 
-    return new Response(JSON.stringify({ ok: true, users: bigBlocks.length }), {
+    return new Response(JSON.stringify({ ok: true, sent: ids.length }), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   } catch (e) {
-    return new Response(
-      JSON.stringify({ ok: false, error: String(e.message || e) }),
-      { status: 500, headers: { "content-type": "application/json; charset=utf-8" } }
-    );
+    // 실패해도 에러만 찍고 500
+    return new Response(JSON.stringify({ ok: false, error: String(e.message || e) }), {
+      status: 500,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
   }
 }
