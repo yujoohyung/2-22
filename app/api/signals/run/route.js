@@ -2,52 +2,61 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function isAuthorized(req) {
-  const secret = process.env.CRON_SECRET || "";
-  if (!secret) return true;                           // 시크릿 없으면 개방
-  const auth = req.headers.get("authorization") || "";
-  if (auth === `Bearer ${secret}`) return true;       // 헤더 허용
+function authCheck(req) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return { ok: true, reason: "no-secret-configured" };
+
   const url = new URL(req.url);
-  if (url.searchParams.get("secret") === secret) return true; // ?secret= 허용
-  return false;
+  const q = url.searchParams.get("secret") || "";
+  const auth = req.headers.get("authorization") || "";
+  const bearer = auth.toLowerCase().startsWith("bearer ")
+    ? auth.slice(7).trim()
+    : "";
+
+  const ok = q === secret || bearer === secret;
+  return { ok, reason: ok ? "match" : "mismatch" };
 }
 
-function baseUrlFrom(req) {
-  // CRON_BASE_URL > NEXT_PUBLIC_SITE_URL > VERCEL_URL > 현재 요청 기준
-  const u =
-    process.env.CRON_BASE_URL ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-  return u || new URL("/", req.url).origin;
-}
+export async function GET(req) { return POST(req); }
 
-async function callJSON(url, init) {
-  const r = await fetch(url, init);
-  let body;
-  try { body = await r.json(); } catch { body = await r.text(); }
-  return { status: r.status, body };
-}
-
-export async function GET(req) {
-  if (!isAuthorized(req)) {
-    return new Response("Unauthorized", {
-      status: 401,
-      headers: { "content-type": "text/plain; charset=utf-8" },
-    });
+export async function POST(req) {
+  const a = authCheck(req);
+  if (!a.ok) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "unauthorized" }),
+      { status: 401, headers: { "content-type": "application/json; charset=utf-8" } }
+    );
   }
 
-  const base = baseUrlFrom(req);
+  const url = new URL(req.url);
+  const base =
+    process.env.CRON_BASE_URL || `${url.protocol}//${url.host}`;
 
-  // 1) RSI 체크 → alerts 생성
-  const check = await callJSON(`${base}/api/signals/check`, { method: "POST" });
+  const out = {};
 
-  // 2) 텔레그램 발송 → alerts.sent=true
-  const dispatch = await callJSON(`${base}/api/signals/dispatch`, { method: "POST" });
+  try {
+    const r1 = await fetch(`${base}/api/signals/check`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      cache: "no-store",
+    });
+    out.check = { status: r1.status, body: await r1.text() };
+  } catch (e) {
+    out.check = { error: String(e?.message || e) };
+  }
 
-  return new Response(JSON.stringify({ ok: true, base, check, dispatch }), {
-    status: 200,
+  try {
+    const r2 = await fetch(`${base}/api/signals/dispatch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      cache: "no-store",
+    });
+    out.dispatch = { status: r2.status, body: await r2.text() };
+  } catch (e) {
+    out.dispatch = { error: String(e?.message || e) };
+  }
+
+  return new Response(JSON.stringify({ ok: true, ...out }), {
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 }
-
-export async function POST(req) { return GET(req); }
