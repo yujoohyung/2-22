@@ -1,8 +1,10 @@
 // app/api/signals/run/route.js
+import { NextResponse } from "next/server";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// ── 디버그 로그: Vercel Function Logs 에 찍힘 ─────────────────────────────
+// ── 권한 체크 ──────────────────────────────────────────────────────────────
 function isAuthorized(req) {
   const header = req.headers.get("authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
@@ -10,14 +12,14 @@ function isAuthorized(req) {
   const url = new URL(req.url);
   const q = url.searchParams.get("secret");
 
-  const secret = process.env.CRON_SECRET || "";
+  const secret = (process.env.CRON_SECRET || "").trim();
 
   console.log("[RUN] has env CRON_SECRET? ", secret ? "YES" : "NO");
   if (secret) console.log("[RUN] env head: ", secret.slice(0, 2) + "***");
   console.log("[RUN] auth header: ", header ? header.slice(0, 20) + "***" : "(none)");
   console.log("[RUN] query secret: ", q ? q.slice(0, 2) + "***" : "(none)");
 
-  if (!secret) return false;               // 서버에 비밀이 없으면 거절
+  if (!secret) return false;
   if (token && token === secret) return true;
   if (q && q === secret) return true;
   return false;
@@ -27,46 +29,53 @@ export async function GET(req) { return POST(req); }
 
 export async function POST(req) {
   try {
-    // 1) 권한 체크 (헤더 or ?secret=)
+    // 1) 1차 권한 체크(헤더 or ?secret=)
     if (!isAuthorized(req)) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "unauthorized" }),
-        { status: 401, headers: { "content-type": "application/json; charset=utf-8" } }
-      );
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
 
-    // 2) 내부로 check → dispatch 순서 호출
+    // 2) 내부 호출 준비: 반드시 "우리의 시크릿"을 실어 보낸다
+    const secret = (process.env.CRON_SECRET || "").trim();
+    const authHeader = `Bearer ${secret}`;
+
+    // 배이스 URL: 가능하면 고정 프로덕션 도메인을 권장
     const base =
-      process.env.NEXT_PUBLIC_SITE_URL ||
-      process.env.CRON_BASE_URL ||
-      `https://${process.env.VERCEL_URL || "localhost:3000"}`;
+      process.env.NEXT_PUBLIC_SITE_URL ||            // ← 예: https://2xbuysell.vercel.app
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
     console.log("[RUN] base =", base);
 
     async function hit(path) {
-      const r = await fetch(new URL(path, base), {
+      const url = new URL(path, base);
+      // (선택) 쿼리로도 넘기고 싶다면 아래 라인 주석 해제
+      // url.searchParams.set("secret", secret);
+
+      const r = await fetch(url, {
         method: "POST",
-        // 굳이 필요는 없지만, 헤더를 그대로 넘겨도 무해
-        headers: { Authorization: req.headers.get("authorization") || "" },
-        cache: "no-store",
+        headers: {
+          // 중요한 부분: 내부 엔드포인트가 동일 검증을 쓴다면 시크릿을 여기로!
+          Authorization: authHeader,
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        },
+        // 필요한 바디가 있으면 body 넣기
       });
+
       let body = {};
-      try { body = await r.json(); } catch {}
+      try { body = await r.json(); } catch (e) {
+        console.warn("[RUN] non-JSON response from", String(url), "status=", r.status);
+      }
       return { status: r.status, body };
     }
 
+    // 3) 실제 호출
     const checkRes = await hit("/api/signals/check");
     const dispatchRes = await hit("/api/signals/dispatch");
 
-    const out = { ok: true, check: checkRes, dispatch: dispatchRes };
-    return new Response(JSON.stringify(out), {
-      headers: { "content-type": "application/json; charset=utf-8" },
-    });
+    // 4) 결과 반환 (항상 JSON)
+    return NextResponse.json({ ok: true, check: checkRes, dispatch: dispatchRes });
   } catch (e) {
     console.error("[RUN] error:", e);
-    return new Response(
-      JSON.stringify({ ok: false, error: String(e?.message || e) }),
-      { status: 500, headers: { "content-type": "application/json; charset=utf-8" } }
-    );
+    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }
