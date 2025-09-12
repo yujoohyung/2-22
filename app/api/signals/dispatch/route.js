@@ -5,6 +5,22 @@ import { sendTelegram } from "../../../../lib/telegram.js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/* ---------- 보안 가드 ---------- */
+function assertCronAuth(req) {
+  const env = (process.env.CRON_SECRET || "").trim();
+  const hdr = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (!env || hdr !== env) throw new Error("unauthorized");
+}
+function jsonError(e) {
+  const msg = e?.message || "error";
+  const status = msg === "unauthorized" ? 401 : 500;
+  return new Response(JSON.stringify({ ok: false, error: msg }), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+/* -------------------------------- */
+
 /* ---------- 유틸 ---------- */
 const DEF_STAGE_AMOUNTS = [120000, 240000, 552000]; // 기본 단계 예산
 const enc = new TextEncoder();
@@ -72,7 +88,7 @@ async function loadRemaindersByUser(supa, userIds) {
   if (error) throw error;
 
   const rem = {};
-  for (const t of trades || []) {
+  for (const t of (trades || [])) {
     const uid = t.user_id;
     const sym = t.symbol;
     const q = Number(t.qty || 0);
@@ -122,8 +138,11 @@ function planForUser({ user, stage, prices, remainders }) {
 }
 
 /* ---------- 라우트 ---------- */
-export async function POST() {
+export async function POST(req) {
   try {
+    // 🔐 헤더 검사
+    assertCronAuth(req);
+
     const supa = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE
@@ -235,9 +254,6 @@ export async function POST() {
       { status: 200, headers: { "content-type": "application/json; charset=utf-8" } }
     );
   } catch (e) {
-    return new Response(
-      JSON.stringify({ ok: false, error: String(e?.message || e) }),
-      { status: 500, headers: { "content-type": "application/json; charset=utf-8" } }
-    );
+    return jsonError(e);
   }
 }

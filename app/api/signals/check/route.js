@@ -7,6 +7,22 @@ import { decideBuyLevel, computeBasketQuantities } from "../../../../lib/formula
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/* ---------- 보안 가드 ---------- */
+function assertCronAuth(req) {
+  const env = (process.env.CRON_SECRET || "").trim();
+  const hdr = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (!env || hdr !== env) throw new Error("unauthorized");
+}
+function jsonError(e) {
+  const msg = e?.message || "error";
+  const status = msg === "unauthorized" ? 401 : 500;
+  return new Response(JSON.stringify({ ok: false, error: msg }), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+/* -------------------------------- */
+
 function kstDate(ts = new Date()) {
   const k = new Date(ts.getTime() + 9 * 3600 * 1000);
   const p = n => String(n).padStart(2, "0");
@@ -14,8 +30,12 @@ function kstDate(ts = new Date()) {
 }
 
 export async function GET(req) { return POST(req); }
+
 export async function POST(req) {
   try {
+    // 🔐 헤더 검사
+    assertCronAuth(req);
+
     await req.json().catch(() => ({})); // body 무시
     const supa = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
@@ -112,6 +132,6 @@ export async function POST(req) {
 
     return new Response(JSON.stringify({ ok: true, rsi, level, created }), { status: 200 });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: String(e.message || e) }), { status: 500 });
+    return jsonError(e);
   }
 }
