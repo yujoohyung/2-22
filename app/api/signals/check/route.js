@@ -16,10 +16,7 @@ function assertCronAuth(req) {
 function jsonError(e) {
   const msg = e?.message || "error";
   const status = msg === "unauthorized" ? 401 : 500;
-  return new Response(JSON.stringify({ ok: false, error: msg }), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
+  return Response.json({ ok: false, error: msg }, { status });
 }
 /* -------------------------------- */
 
@@ -36,20 +33,30 @@ export async function POST(req) {
     // 🔐 헤더 검사
     assertCronAuth(req);
 
-    await req.json().catch(() => ({})); // body 무시
-    const supa = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+    // ✅ 강제 실행 플래그 (?force=1 이면 시간 체크 우회)
+    const url = new URL(req.url);
+    const force = url.searchParams.get("force") === "1";
+
+    // body는 사용하지 않음 (파서 에러 방지용)
+    await req.json().catch(() => ({}));
+
+    const supa = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE
+    );
 
     // settings
     const { data: sets } = await supa.from("settings").select("*").limit(1).maybeSingle();
-    if (!sets) return new Response(JSON.stringify({ error: "settings not found" }), { status: 400 });
+    if (!sets) return Response.json({ ok: false, error: "settings not found" }, { status: 400 });
 
     const main = sets.main_symbol || "A";
-    const buyLevels = sets.rsi_buy_levels || [43,36,30];
+    const buyLevels = sets.rsi_buy_levels || [43, 36, 30];
     const checkTimes = sets.rsi_check_times || ["10:30", "14:30"];
     const basket = sets.basket || []; // [{symbol, weight}, ...]
 
-    if (!isCheckTimeKST(checkTimes, 2)) {
-      return new Response(JSON.stringify({ skip: "not-check-time" }), { status: 200 });
+    // ⬇️ 점검 시간 우회 (force가 아니면 시간 체크)
+    if (!force && !isCheckTimeKST(checkTimes, 2)) {
+      return Response.json({ skip: "not-check-time" }, { status: 200 });
     }
 
     // main 가격 → RSI
@@ -58,10 +65,10 @@ export async function POST(req) {
       .order("ts", { ascending: false }).limit(200);
     if (pe) throw pe;
 
-    const arr = (aPrices || []).sort((x,y)=> new Date(x.ts) - new Date(y.ts));
+    const arr = (aPrices || []).sort((x, y) => new Date(x.ts) - new Date(y.ts));
     const closes = arr.map(x => Number(x.close));
     const rsi = calcRSI(closes, sets.rsi_period || 14);
-    if (rsi == null) return new Response(JSON.stringify({ error: "not-enough-data" }), { status: 400 });
+    if (rsi == null) return Response.json({ ok: false, error: "not-enough-data" }, { status: 400 });
 
     const level = decideBuyLevel(rsi, buyLevels); // -1 이면 매수 아님
     const action = level < 0 ? "NONE" : "BUY";
@@ -130,7 +137,7 @@ export async function POST(req) {
       if (!ie && ins) created.push(ins);
     }
 
-    return new Response(JSON.stringify({ ok: true, rsi, level, created }), { status: 200 });
+    return Response.json({ ok: true, rsi, level, created }, { status: 200 });
   } catch (e) {
     return jsonError(e);
   }
