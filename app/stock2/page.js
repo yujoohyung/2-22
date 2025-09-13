@@ -270,12 +270,6 @@ export default function Stock2Page() {
     });
   }, [trades, apiRows]);
 
-  /** 전체 매수 수량(해당 심볼) → 매도는 항상 이 수량의 30% 고정 */
-  const totalBuyQty = useMemo(
-    () => (trades[SYMBOL] || []).reduce((s, t) => s + (Number(t.qty) || 0), 0),
-    [trades]
-  );
-
   /** 입력/로그 상태 */
   const TX_KEY = "txHistory";
   const [date, setDate] = useState(todayLocal());
@@ -350,13 +344,13 @@ export default function Stock2Page() {
     setTxRows(next);
   }
 
-  /** (선택) 서버에도 기록: user_trades에 저장 (매도 30% 계산용) */
+  /** (서버 기록) user_trades에 저장 — 심볼 통일: bigtech2x */
   async function saveToServer({ side, date, price, qty }) {
     try {
       await fetch("/api/trades/add", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ symbol: SYMBOL === "stock2" ? "B" : "A", side, date, price, qty })
+        body: JSON.stringify({ symbol: "bigtech2x", side, date, price, qty })
       });
     } catch {}
   }
@@ -368,15 +362,18 @@ export default function Stock2Page() {
     const _txid = uid();
     addTrade(SYMBOL, { _txid, signal: "", date, price, buyPrice: price, dailyPct: null, rsi: null, qty, sellQty: 0 });
     saveTx({ _txid, _ts: Date.now(), type: "BUY", date, symbol: SYMBOL, price, qty });
-    await saveToServer({ side: "BUY", date, price, qty }); // ← 서버 저장(선택)
+    await saveToServer({ side: "BUY", date, price, qty });
     setPriceInput(""); setQtyInput("");
     requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
+
+    // (선택) 로컬 페이지 집계 API — 필요 없으면 제거해도 됨
     void fetch("/api/trades", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ symbol: "stock2", date, price, qty, side: "BUY" })
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ symbol: "stock2", date, price, qty, side: "BUY" })
     }).catch(()=>{});
   };
+
   const handleSell = async () => {
     const parsed = parseInputs(); if (!parsed) return;
     const { price, qty } = parsed;
@@ -384,14 +381,17 @@ export default function Stock2Page() {
     addTrade(SYMBOL, { _txid, signal: "", date, price, buyPrice: price, dailyPct: null, rsi: null, qty: 0, sellQty: qty });
     upsertRebalance({ date, price, qty });
     saveTx({ _txid, _ts: Date.now(), type: "SELL", date, symbol: SYMBOL, price, qty });
-    await saveToServer({ side: "SELL", date, price, qty }); // ← 서버 저장(선택)
+    await saveToServer({ side: "SELL", date, price, qty });
     setPriceInput(""); setQtyInput("");
+
+    // (선택) 로컬 페이지 집계 API — 필요 없으면 제거해도 됨
     void fetch("/api/trades", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ symbol: "stock2", date, price, qty, side: "SELL" })
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ symbol: "stock2", date, price, qty, side: "SELL" })
     }).catch(()=>{});
   };
+
   const undoTx = (row) => {
     setTrades(SYMBOL, (trades[SYMBOL] || []).filter((t) => t._txid !== row._txid));
     if (row.type === "SELL") deleteFromRebalance({ date: row.date, price: row.price, qty: row.qty });
@@ -466,7 +466,6 @@ export default function Stock2Page() {
                   const s2 = stepQty.bigtech2x?.s2 ?? 0;
                   const s3 = stepQty.bigtech2x?.s3 ?? 0;
 
-                  // 전체 매수의 30% 매도
                   const totalBuyQty = (trades[SYMBOL] || []).reduce((s, t) => s + (Number(t.qty) || 0), 0);
                   const sellQty = totalBuyQty > 0 ? Math.max(1, Math.floor(totalBuyQty * 0.3)) : 0;
 
@@ -566,11 +565,37 @@ export default function Stock2Page() {
             const high = nowQuote?.high ?? 0;
             const drop = high ? ((cur - high) / high) * 100 : 0;
 
+            const buysThis = (() => {
+              const arr = (trades[SYMBOL] || []).filter((t) => Number(t.qty) > 0);
+              const qty = arr.reduce((s, t) => s + Number(t.qty || 0), 0);
+              const amt = arr.reduce((s, t) => s + Number(t.qty || 0) * Number(t.price ?? t.buyPrice ?? 0), 0);
+              return { qty, amt, avg: qty > 0 ? amt / qty : 0 };
+            })();
+            const buysOther = (() => {
+              const arr = (trades[OTHER_SYMBOL] || []).filter((t) => Number(t.qty) > 0);
+              const qty = arr.reduce((s, t) => s + Number(t.qty || 0), 0);
+              const amt = arr.reduce((s, t) => s + Number(t.qty || 0) * Number(t.price ?? t.buyPrice ?? 0), 0);
+              return { qty, amt, avg: qty > 0 ? amt / qty : 0 };
+            })();
+
+            const sellsThisQty = (trades[SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0), 0);
+            const sellsOtherQty = (trades[OTHER_SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0), 0);
+            const sellAmtThis = (trades[SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0) * Number(t.price ?? t.sellPrice ?? 0), 0);
+            const sellAmtOther = (trades[OTHER_SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0) * Number(t.price ?? t.sellPrice ?? 0), 0);
+
+            const avgThis = buysThis.qty > 0 ? buysThis.amt / buysThis.qty : 0;
+            const avgOther = buysOther.qty > 0 ? buysOther.amt / buysOther.qty : 0;
+            const remQtyThis = Math.max(0, buysThis.qty - sellsThisQty);
+            const remQtyOther = Math.max(0, buysOther.qty - sellsOtherQty);
+            const remCostThis = remQtyThis * avgThis;
+            const remCostOther = remQtyOther * avgOther;
+
             const evalThis = remQtyThis * cur;
             const profitThis = evalThis - remCostThis;
             const roiThis = remCostThis ? (profitThis / remCostThis) * 100 : 0;
             const avgCostThisDisp = remQtyThis > 0 ? (remCostThis / remQtyThis) : 0;
 
+            const otherNow = useOtherNow(OTHER_SYMBOL); // 이미 위에서 선언되어 사용 중
             const evalOther = remQtyOther * (otherNow || 0);
 
             const totalBuyAmt = buysThis.amt + buysOther.amt;

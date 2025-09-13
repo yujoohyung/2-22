@@ -9,10 +9,7 @@ export async function GET(req) {
     const url = new URL(req.url);
     const symbol = url.searchParams.get("symbol");
     if (!symbol) {
-      return new Response(JSON.stringify({ ok: false, error: "symbol required" }), {
-        status: 400,
-        headers: { "content-type": "application/json; charset=utf-8" },
-      });
+      return new Response(JSON.stringify({ ok: false, error: "symbol required" }), { status: 400 });
     }
 
     const supa = createClient(
@@ -29,21 +26,13 @@ export async function GET(req) {
       .maybeSingle();
 
     if (error) throw error;
-    if (!data) {
-      return new Response(JSON.stringify({ ok: false, error: "no price" }), {
-        status: 404,
-        headers: { "content-type": "application/json; charset=utf-8" },
-      });
-    }
+    if (!data) return new Response(JSON.stringify({ ok: false, error: "no price" }), { status: 404 });
 
-    return new Response(
-      JSON.stringify({ ok: true, price: Number(data.close), asOf: data.ts }),
-      { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }
-    );
-  } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: String(e?.message || e) }), {
-      status: 500,
-      headers: { "content-type": "application/json; charset=utf-8" },
+    return new Response(JSON.stringify({ ok: true, price: Number(data.close), asOf: data.ts }), {
+      status: 200,
+      headers: { "cache-control": "no-store" },
     });
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, error: String(e?.message || e) }), { status: 500 });
   }
 }
