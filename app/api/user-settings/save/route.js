@@ -8,16 +8,20 @@ export const dynamic = "force-dynamic";
 export async function POST(req) {
   try {
     const { yearly_budget } = await req.json();
-    const supa = createRouteHandlerClient({ cookies });
 
+    const supa = createRouteHandlerClient({ cookies });
     const { data: { user }, error: ue } = await supa.auth.getUser();
     if (ue) throw ue;
-    if (!user) return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
+    if (!user) {
+      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
+    }
 
-    const { error } = await supa.from("user_settings").upsert({
-      user_id: user.id,
-      yearly_budget: Number(yearly_budget || 0)
-    }, { onConflict: "user_id" });
+    const { error } = await supa
+      .from("user_settings")
+      .upsert({
+        user_id: user.id,
+        yearly_budget: Number(yearly_budget || 0)
+      }, { onConflict: "user_id" }); // ★ 중요: user_id 기준 upsert
 
     if (error) throw error;
 
