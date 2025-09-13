@@ -1,20 +1,41 @@
+// app/api/prices/update/route.js
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 import { createClient } from "@supabase/supabase-js";
-import { calcRSI } from "../../../../lib/rsi.js";
+import { normSymbol } from "../../../../lib/symbols";
 
-export async function GET(req) {
-  const url = new URL(req.url);
-  const symbol = url.searchParams.get("symbol") || "005930";
-  const period = Number(url.searchParams.get("period") || 14);
-  const limit = Number(url.searchParams.get("limit") || 200);
+export async function POST(req) {
+  try {
+    const body = await req.json().catch(() => ({}));
+    const rawSymbol = body?.symbol;
+    const close = body?.close;
 
-  const supa = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
-  const { data, error } = await supa.from("prices")
-    .select("ts, close").eq("symbol", symbol)
-    .order("ts", { ascending: false }).limit(limit);
-  if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+    if (!rawSymbol || close == null) {
+      return new Response(JSON.stringify({ ok: false, error: "symbol/close required" }), { status: 400 });
+    }
 
-  const arr = (data || []).sort((a,b)=> new Date(a.ts) - new Date(b.ts));
-  const closes = arr.map(x => Number(x.close));
-  const rsi = calcRSI(closes, period);
-  return new Response(JSON.stringify({ items: arr, rsi }), { status: 200 });
+    const symbol = normSymbol(rawSymbol); // ✅ 심볼 표준화
+    const when = body?.ts ? new Date(body.ts) : new Date();
+
+    const supa = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE
+    );
+
+    const { error } = await supa.from("prices").insert({
+      symbol,
+      ts: when.toISOString(),
+      close: Number(close),
+    });
+
+    if (error) throw error;
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, error: String(e?.message || e) }), { status: 500 });
+  }
 }

@@ -1,4 +1,3 @@
-// app/api/user-settings/save/route.js
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -25,23 +24,33 @@ export async function POST(req) {
       return Response.json({ ok: false, error: "invalid yearly_budget" }, { status: 400 });
     }
 
-    // 존재여부 확인
-    const exist = await supa.from("user_settings").select("user_id").eq("user_id", user.id).maybeSingle();
+    // 존재 여부
+    const exist = await supa
+      .from("user_settings")
+      .select("user_id")
+      .eq("user_id", user.id)
+      .maybeSingle();
 
     if (!exist.data) {
-      // 없으면 생성
       const ins = await supa.from("user_settings").insert({
         user_id: user.id,
+        user_email: user.email || null,
         yearly_budget: yearly,
+        deposit: yearly, // 예수금 = 납입금(초기 동기화) 원하면 제거
         notify_enabled: true,
+        basket: [],
+        stage_amounts_krw: [0,0,0],
+        stage_amounts_by_symbol: {},
       }).select().single();
       if (ins.error) throw ins.error;
       return Response.json({ ok: true, data: ins.data });
     } else {
-      // 있으면 업데이트 (내 줄만!)
       const upd = await supa
         .from("user_settings")
-        .update({ yearly_budget: yearly, updated_at: new Date().toISOString() })
+        .update({
+          yearly_budget: yearly,
+          updated_at: new Date().toISOString(),
+        })
         .eq("user_id", user.id)
         .select()
         .single();
