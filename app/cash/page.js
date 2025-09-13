@@ -1,27 +1,26 @@
-// app/cash/page.jsx  ← 예치금 페이지
+// app/cash/page.jsx
 "use client";
 
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useAppStore } from "../store";
 import { createClient } from "@supabase/supabase-js";
 
-/* ===== Supabase (클라이언트) ===== */
+/* ===== Supabase Client (클라) – 세션 토큰 얻기 용도만 ===== */
 const supa = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
-async function getAuthUser() {
+/* ===== Access Token 헬퍼 ===== */
+async function getAccessToken() {
   try {
-    const { data: { user } } = await supa.auth.getUser();
-    return user || null;
+    const { data } = await supa.auth.getSession();
+    return data?.session?.access_token || null;
   } catch { return null; }
 }
 
 /* ===== 가격 훅 (폴링 + 캐시 폴백) ===== */
 const MOCK_PRICE = { NASDAQ2X: 11500, BIGTECH2X: 9800 };
-
-/** 서버 /api/price?symbol=SYMBOL 를 3~5초 간격 폴링, 가시성/포커스 시 즉시 새로고침 */
 function useLivePrice(symbol, { intervalMs = 4000 } = {}) {
   const [price, setPrice] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -41,11 +40,10 @@ function useLivePrice(symbol, { intervalMs = 4000 } = {}) {
         if (Number.isFinite(p)) {
           setPrice(p);
           localStorage.setItem(key, JSON.stringify({ price: p, asOf: data?.asOf ?? new Date().toISOString() }));
-          return;
+        } else {
+          throw new Error("invalid");
         }
-        throw new Error("invalid");
       } catch {
-        // 캐시 → 모의값 폴백
         try {
           const cached = JSON.parse(localStorage.getItem(key) || "null");
           if (!aborted && Number.isFinite(Number(cached?.price))) {
@@ -59,15 +57,9 @@ function useLivePrice(symbol, { intervalMs = 4000 } = {}) {
       }
     };
 
-    const start = () => {
-      // 즉시 1회
-      fetchOnce();
-      // 주기 폴링
-      clearInterval(timerRef.current);
-      timerRef.current = setInterval(fetchOnce, intervalMs);
-    };
-
-    start();
+    fetchOnce();
+    clearInterval(timerRef.current);
+    timerRef.current = setInterval(fetchOnce, intervalMs);
 
     const onVis = () => { if (document.visibilityState === "visible") fetchOnce(); };
     const onFocus = () => fetchOnce();
@@ -75,10 +67,10 @@ function useLivePrice(symbol, { intervalMs = 4000 } = {}) {
     window.addEventListener("focus", onFocus);
 
     return () => {
-      aborted = true;
       clearInterval(timerRef.current);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onFocus);
+      aborted = true;
     };
   }, [symbol, intervalMs]);
 
@@ -113,58 +105,44 @@ function summarizeForDisplay(raw = []) {
 
 /* ===== 페이지 ===== */
 export default function CashDashboardPage() {
-  // ▶ 로그인 사용자 식별
-  const [uid, setUid] = useState(null);
-  const [userEmail, setUserEmail] = useState(null);
-
-  useEffect(() => {
-    (async () => {
-      const user = await getAuthUser();
-      setUid(user?.id || null);
-      setUserEmail(user?.email || null);
-    })();
-  }, []);
-
   const yearlyBudgetStore = useAppStore((s) => s.yearlyBudget);
   const { setYearlyBudget, setStepQty } = useAppStore();
-  const trades = useAppStore((s) => s.trades || {}); // ✅ 전역 거래내역
+  const trades = useAppStore((s) => s.trades || {});
 
-  /* ✅ 사용자별 로컬 캐시 키 */
-  const keyYB = uid ? `yb:${uid}` : null;
-
-  /* ✅ DB → 로컬 → UI 초기값 로드 */
+  /* 사용자별 입력값 */
   const [yearlyInput, setYearlyInput] = useState(0);
+  const [loadingUser, setLoadingUser] = useState(true);
 
+  // 서버 API에서 “내 값” 로드 (토큰 인증 → user_id 고정)
   useEffect(() => {
-    if (!uid) return;
     (async () => {
-      // DB 로드 (없으면 0)
-      const { data, error } = await supa
-        .from("user_settings")
-        .select("yearly_budget, deposit")
-        .eq("user_id", uid)
-        .maybeSingle();
-      if (error) {
-        // 로컬 폴백
-        try { const loc = Number(localStorage.getItem(keyYB) || "0"); setYearlyInput(loc); } catch { setYearlyInput(0); }
-        return;
-      }
-      const dbVal = Number(data?.yearly_budget ?? data?.deposit ?? 0) || 0;
-      if (dbVal > 0) {
-        setYearlyInput(dbVal);
-        try { localStorage.setItem(keyYB, String(dbVal)); } catch {}
-      } else {
-        // 로컬 폴백
-        try { const loc = Number(localStorage.getItem(keyYB) || "0"); setYearlyInput(loc); } catch { setYearlyInput(0); }
+      setLoadingUser(true);
+      try {
+        const token = await getAccessToken();
+        if (!token) throw new Error("not-signed-in");
+        const res = await fetch("/api/user-settings/me", {
+          headers: { Authorization: `Bearer ${token}`, "cache-control": "no-store" }
+        });
+        const d = await res.json();
+        if (d?.ok && d.data) {
+          const yb = Number(d.data.yearly_budget ?? d.data.deposit ?? 0) || 0;
+          setYearlyInput(yb);
+          // 전역도 동기 (UI 일관성)
+          setYearlyBudget(yb);
+        }
+      } catch {
+        // 로그인 전이면 0 유지
+      } finally {
+        setLoadingUser(false);
       }
     })();
-  }, [uid, keyYB]);
+  }, [setYearlyBudget]);
 
-  /* ✅ 현재가 (폴링 기반 실시간) */
+  /* 실시간 가격 */
   const { price: priceNasdaq2x,  loading: loadingN } = useLivePrice("NASDAQ2X",  { intervalMs: 4000 });
   const { price: priceBigtech2x, loading: loadingB } = useLivePrice("BIGTECH2X", { intervalMs: 4000 });
 
-  /* ✅ 누적평가금: 잔여수량 × 현재가 (잔여수량이 0이면 0원) */
+  /* 누적평가금 */
   const { evalAmt, evalSum } = useMemo(() => {
     const listN = Array.isArray(trades.dashboard) ? trades.dashboard : [];
     const listB = Array.isArray(trades.stock2)   ? trades.stock2   : [];
@@ -187,59 +165,30 @@ export default function CashDashboardPage() {
     };
   }, [trades, priceNasdaq2x, priceBigtech2x]);
 
-  /* ✅ 표시용 rbHistory */
+  /* ✅ 표시용 rbHistory (단일 상태만 유지) */
   const [displayRb, setDisplayRb] = useState([]);
-
-  // 저장 포맷 정리(내부키 통일)
   useEffect(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(RB_KEY) || "[]");
-      const cleaned = (Array.isArray(raw) ? raw : []).map((r) => {
-        const qty = Number(r?.qty || 0);
-        const price = Number(r?.price || 0);
-        const amount = Number(r?.amount ?? price * qty);
-        let symbol = r?.symbol;
-        if (symbol === "NASDAQ2X" || symbol === "dashboard") symbol = "dashboard";
-        else if (symbol === "BIGTECH2X" || symbol === "stock2" || symbol === "bigtech") symbol = "stock2";
-        return { date: r?.date, symbol, qty, amount, price, type: "SELL" };
-      }).filter((r) =>
-        !!r.date &&
-        (r.symbol === "dashboard" || r.symbol === "stock2") &&
-        Number.isFinite(r.qty) && Number.isFinite(r.amount) &&
-        r.qty > 0 && r.amount > 0
-      );
-      if (JSON.stringify(raw) !== JSON.stringify(cleaned)) {
-        localStorage.setItem(RB_KEY, JSON.stringify(cleaned));
-      }
-    } catch {}
-  }, []);
-
-  // 동기화
-  useEffect(() => {
-    const refreshFromStorage = () => {
-      try {
-        const raw = JSON.parse(localStorage.getItem(RB_KEY) || "[]");
-        setDisplayRb(summarizeForDisplay(raw));
-      } catch { setDisplayRb([]); }
+    const refresh = () => {
+      try { setDisplayRb(summarizeForDisplay(JSON.parse(localStorage.getItem(RB_KEY) || "[]"))); }
+      catch { setDisplayRb([]); }
     };
-    refreshFromStorage();
-
+    refresh();
     let ch;
-    try { ch = new BroadcastChannel("rb"); ch.onmessage = refreshFromStorage; } catch {}
-    const onStorage = (e) => { if (e.key === RB_KEY) refreshFromStorage(); };
-    const onVis = () => { if (document.visibilityState === "visible") refreshFromStorage(); };
+    try { ch = new BroadcastChannel("rb"); ch.onmessage = refresh; } catch {}
+    const onStorage = (e) => { if (e.key === RB_KEY) refresh(); };
+    const onVis = () => { if (document.visibilityState === "visible") refresh(); };
     window.addEventListener("storage", onStorage);
     window.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", refreshFromStorage);
+    window.addEventListener("focus", refresh);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("focus", refreshFromStorage);
+      window.removeEventListener("focus", refresh);
       try { ch && ch.close(); } catch {}
     };
   }, []);
 
-  /* ===== 분배/수량 계산 ===== */
+  /* 분배/수량 계산 */
   const weights = { nasdaq2x: 0.6, bigtech2x: 0.4 };
   const monthlyExpect = useMemo(() => ({
     nasdaq2x: Math.round((yearlyInput * weights.nasdaq2x) / 12),
@@ -271,61 +220,40 @@ export default function CashDashboardPage() {
     };
   }, [adjustedBuy, priceNasdaq2x, priceBigtech2x]);
 
-  /* ===== 저장: 전역 + DB(사용자별) ===== */
+  /* 저장 → 서버 API로 (사용자 토큰 붙여서) */
   const handleSaveGlobal = async () => {
-    // 기존 전역 상태 업데이트(화면에서 쓰던 거 유지)
+    // 화면 전역 상태 반영
     useAppStore.getState().setYearlyBudget(yearlyInput);
     setStepQty({
       nasdaq2x: { s1: qtyByStage.s1.nasdaq2x || 0, s2: qtyByStage.s2.nasdaq2x || 0, s3: qtyByStage.s3.nasdaq2x || 0 },
       bigtech2x:{ s1: qtyByStage.s1.bigtech2x || 0, s2: qtyByStage.s2.bigtech2x || 0, s3: qtyByStage.s3.bigtech2x || 0 },
     });
 
-    // DB 동기화 (사용자별로 구분 저장)
     try {
-      const basket = [{ symbol: "nasdaq2x", weight: 0.6 }, { symbol: "bigtech2x", weight: 0.4 }];
-      if (uid) {
-        await supa.from("user_settings").upsert({
-          user_id: uid,
-          user_email: userEmail || null,
-          yearly_budget: Number(yearlyInput || 0),
-          deposit: Number(yearlyInput || 0),
-          basket
-        }, { onConflict: "user_id" });
-        try { localStorage.setItem(keyYB, String(Number(yearlyInput||0))); } catch {}
-      }
-      alert("전역 저장 + DB 동기화 완료!");
+      const token = await getAccessToken();
+      if (!token) throw new Error("로그인이 필요합니다.");
+      const res = await fetch("/api/user-settings/save", {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ yearly_budget: Number(yearlyInput || 0) }),
+      });
+      const d = await res.json();
+      if (!d?.ok) throw new Error(d?.error || "save failed");
+      alert("전역 저장 + 사용자별 DB 저장 완료!");
     } catch (e) {
-      console.warn("save user_settings failed", e);
-      alert("저장은 되었지만 DB 동기화에 실패했습니다.");
+      alert("저장 실패: " + (e?.message || e));
     }
   };
-
-  /* ===== 리밸런싱 내역 테이블 ===== */
-  const historyRows = useMemo(() => {
-    const byDate = new Map();
-    for (const r of displayRb) {
-      const date = r.date;
-      const sym = r.symbol; // 'NASDAQ2X' | 'BIGTECH2X' (표시용)
-      const body = `${Number(r.amount).toLocaleString("ko-KR")}원 / ${Number(r.qty).toLocaleString("ko-KR")}주`;
-      const row = byDate.get(date) || { id: date, date, nasdaq2x: "", bigtech2x: "" };
-      if (sym === "NASDAQ2X") row.nasdaq2x = body;
-      if (sym === "BIGTECH2X") row.bigtech2x = body;
-      byDate.set(date, row);
-    }
-    return Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
-  }, [displayRb]);
 
   return (
     <div className="cash-root">
       <h1 className="h1">예치금</h1>
 
-      {/* 상단: 좌(분배표) / 우(입력 + KPI) */}
       <div className="grid-two">
         <section className="card card-strong">
           <TableHeader title="구 분" colA="나스닥100 2x(60%)" colB="빅테크7 2x(40%)" />
           <table className="tbl">
             <tbody>
-              {/* ✅ 누적평가금 기반 */}
               <Row label="현재 평가금액" a={won(evalAmt.nasdaq2x)} b={won(evalAmt.bigtech2x)} tone="yellow" />
               <Row label="현재 평가금액 합산액" a={won(evalSum)} b="" tone="gray" spanA />
               <Row label="1단계 매수" a={won(adjustedBuy.s1.nasdaq2x)} b={won(adjustedBuy.s1.bigtech2x)} tone="yellow" />
@@ -340,7 +268,6 @@ export default function CashDashboardPage() {
           </div>
         </section>
 
-        {/* 우측 */}
         <div className="right-col">
           <div className="card" style={{ padding: 12 }}>
             <div style={{ fontWeight: 800, color: "#b40000", marginBottom: 8 }}>1년 납입금액 (여기만 입력)</div>
@@ -352,8 +279,9 @@ export default function CashDashboardPage() {
                 onChange={(e) => setYearlyInput(Number(e.target.value || 0))}
                 className="input"
                 placeholder="예: 20000000"
+                disabled={loadingUser}
               />
-              <button onClick={handleSaveGlobal} className="btn-primary">
+              <button onClick={handleSaveGlobal} className="btn-primary" disabled={loadingUser}>
                 저장(전역 반영 + DB)
               </button>
             </div>
@@ -361,7 +289,7 @@ export default function CashDashboardPage() {
 
           <div className="card" style={{ padding: 12 }}>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>현재 매수 비율</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div className="ratio-grid">
               <KpiBox title="나스닥100 2x" value={pct(evalSum ? (evalAmt.nasdaq2x / evalSum) * 100 : 0)} />
               <KpiBox title="빅테크7 2x" value={pct(evalSum ? (evalAmt.bigtech2x / evalSum) * 100 : 0)} />
             </div>
@@ -369,7 +297,6 @@ export default function CashDashboardPage() {
         </div>
       </div>
 
-      {/* 하단: 산출표 + 리밸런싱 내역 */}
       <div className="grid-two">
         <section className="card card-strong">
           <TableHeader title="(보정치) 실제 매수 금액 산출" colA="나스닥100 2x(60%)" colB="빅테크7 2x(40%)" />
@@ -388,7 +315,6 @@ export default function CashDashboardPage() {
           </div>
         </section>
 
-        {/* 리밸런싱 내역 */}
         <section className="card" style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ padding: "10px 12px", borderBottom: "1px solid #eee", fontWeight: 800 }}>리밸런싱 내역</div>
           <div style={{ maxHeight: 260, overflowY: "auto" }}>
@@ -397,13 +323,13 @@ export default function CashDashboardPage() {
                 <tr>{["날짜", "나스닥2배", "빅테크2배"].map((h) => (<th key={h} className="thSmall">{h}</th>))}</tr>
               </thead>
               <tbody>
-                {historyRows.length === 0 ? (
+                {displayRb.length === 0 ? (
                   <tr><td colSpan={3} style={{ padding: 12, textAlign: "center", color: "#777" }}>기록 없음</td></tr>
-                ) : historyRows.map((r) => (
-                  <tr key={r.id} style={{ borderTop: "1px solid #f0f0f0" }}>
+                ) : displayRb.map((r) => (
+                  <tr key={`${r.date}-${r.symbol}`} style={{ borderTop: "1px solid #f0f0f0" }}>
                     <td className="tdSmall">{r.date}</td>
-                    <td className="tdSmall tdRight">{r.nasdaq2x}</td>
-                    <td className="tdSmall tdRight">{r.bigtech2x}</td>
+                    <td className="tdSmall tdRight">{r.symbol === "NASDAQ2X" ? `${Number(r.amount).toLocaleString("ko-KR")}원 / ${Number(r.qty).toLocaleString("ko-KR")}주` : ""}</td>
+                    <td className="tdSmall tdRight">{r.symbol === "BIGTECH2X" ? `${Number(r.amount).toLocaleString("ko-KR")}원 / ${Number(r.qty).toLocaleString("ko-KR")}주` : ""}</td>
                   </tr>
                 ))}
               </tbody>
@@ -412,15 +338,12 @@ export default function CashDashboardPage() {
         </section>
       </div>
 
-      {/* 반응형 CSS */}
       <style jsx>{`
-        .cash-root { maxWidth: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+        .cash-root { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
         .h1 { font-size: 20px; font-weight: 800; }
 
         .grid-two { display: grid; grid-template-columns: 1fr; gap: 16px; }
         .right-col { display: grid; gap: 12px; }
-
-        /* ≥ 980px 에서만 2칼럼 */
         @media (min-width: 980px) {
           .grid-two { grid-template-columns: 1fr 340px; }
         }
@@ -444,6 +367,10 @@ export default function CashDashboardPage() {
           background: #0ea5e9; color: #fff; border: 1px solid #0ea5e9;
         }
         .muted { padding: 8px 12px; font-size: 12px; color: #666; }
+        .ratio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        @media (max-width: 420px) {
+          .ratio-grid { grid-template-columns: 1fr; }
+        }
       `}</style>
     </div>
   );
@@ -458,8 +385,7 @@ function TableHeader({ title, colA, colB }) {
         borderBottom: "2px solid #9aa7b1",
         display: "grid",
         gridTemplateColumns: "1fr 1fr 1fr",
-        gap: 0,
-        fontWeight: 800,
+        gap: 0, fontWeight: 800,
       }}
     >
       <div style={{ padding: "10px 12px", borderRight: "2px solid #9aa7b1" }}>{title}</div>
@@ -473,9 +399,7 @@ function Row({ label, a, b, tone = "default", spanA = false }) {
   const base = {
     padding: "10px 12px",
     borderTop: "1px solid #cbd5e1",
-    height: 44,
-    whiteSpace: "nowrap",
-    verticalAlign: "middle",
+    height: 44, whiteSpace: "nowrap", verticalAlign: "middle",
   };
   const bg =
     tone === "yellow" ? "#fff1cc" :
