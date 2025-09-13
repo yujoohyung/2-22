@@ -2,7 +2,7 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { requireUser } from "../../../../lib/auth-server.js";
+import { requireUser } from "../../../lib/auth-server.js";
 
 export async function POST(req) {
   try {
