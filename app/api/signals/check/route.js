@@ -26,6 +26,38 @@ function kstDate(ts = new Date()) {
   return `${k.getUTCFullYear()}-${p(k.getUTCMonth()+1)}-${p(k.getUTCDate())}`;
 }
 
+/** 배이스 URL (서버 내에서 /api/kis 호출용) */
+function getBase(req) {
+  if (process.env.NEXT_PUBLIC_SITE_URL) return process.env.NEXT_PUBLIC_SITE_URL;
+  if (process.env.CRON_BASE_URL) return process.env.CRON_BASE_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  const u = new URL(req.url);
+  return `${u.protocol}//${u.host}`;
+}
+
+/** KIS 일봉에서 종가 배열 가져오기 (대시보드 CODE와 동일) */
+async function fetchKISCloses({ req, code, days = 220 }) {
+  try {
+    const pad = (n) => String(n).padStart(2, "0");
+    const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+    const end = new Date();
+    const start = new Date(); start.setDate(end.getDate() - (days + 20)); // 여유 버퍼
+    const base = getBase(req);
+    const url = new URL(`/api/kis/daily?code=${code}&start=${ymd(start)}&end=${ymd(end)}`, base);
+    const r = await fetch(url.toString(), { cache: "no-store" });
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    const out = j?.output || j?.output1 || [];
+    const rows = Array.isArray(out) ? out : [];
+    const closes = rows
+      .map(x => Number(x.stck_clpr || x.tdd_clsprc || x.close))
+      .filter(v => Number.isFinite(v));
+    return closes.length ? closes : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(req) { return POST(req); }
 
 export async function POST(req) {
@@ -49,31 +81,49 @@ export async function POST(req) {
     const { data: sets } = await supa.from("settings").select("*").limit(1).maybeSingle();
     if (!sets) return Response.json({ ok: false, error: "settings not found" }, { status: 400 });
 
+    // 메인 심볼/기간/체크시간/바스켓
     const main = sets.main_symbol || "A";
     const buyLevels = sets.rsi_buy_levels || [43, 36, 30];
     const checkTimes = sets.rsi_check_times || ["10:30", "14:30"];
     const basket = sets.basket || []; // [{symbol, weight}, ...]
+    const rsiPeriod = Number(sets.rsi_period || 14);
 
     // ⬇️ 점검 시간 우회 (force가 아니면 시간 체크)
     if (!force && !isCheckTimeKST(checkTimes, 2)) {
       return Response.json({ skip: "not-check-time" }, { status: 200 });
     }
 
-    // main 가격 → RSI
+    /* ---------- 1) DB prices 기반 RSI 계산 시도 ---------- */
     const { data: aPrices, error: pe } = await supa
       .from("prices").select("ts, close").eq("symbol", main)
-      .order("ts", { ascending: false }).limit(200);
+      .order("ts", { ascending: false }).limit(300);
     if (pe) throw pe;
 
-    const arr = (aPrices || []).sort((x, y) => new Date(x.ts) - new Date(y.ts));
-    const closes = arr.map(x => Number(x.close));
-    const rsi = calcRSI(closes, sets.rsi_period || 14);
-    if (rsi == null) return Response.json({ ok: false, error: "not-enough-data" }, { status: 400 });
+    const dbSorted = (aPrices || []).sort((x, y) => new Date(x.ts) - new Date(y.ts));
+    let closes = dbSorted.map(x => Number(x.close)).filter(Number.isFinite);
+    let rsi = calcRSI(closes, rsiPeriod);
+
+    /* ---------- 2) 폴백: DB가 부족하면 KIS 일봉으로 RSI ---------- */
+    const need = rsiPeriod + 1;
+    const dbEnough = (closes?.length || 0) >= need && rsi != null;
+    if (!dbEnough) {
+      // settings에 있으면 사용, 없으면 대시보드 CODE(418660)
+      const kisCode = sets.kis_main_code || "418660";
+      const kisCloses = await fetchKISCloses({ req, code: kisCode, days: Math.max(220, need + 10) });
+      if (kisCloses && kisCloses.length >= need) {
+        closes = kisCloses;
+        rsi = calcRSI(kisCloses, rsiPeriod);
+      }
+    }
+
+    if (rsi == null) {
+      return Response.json({ ok: false, error: "not-enough-data" }, { status: 400 });
+    }
 
     const level = decideBuyLevel(rsi, buyLevels); // -1 이면 매수 아님
     const action = level < 0 ? "NONE" : "BUY";
 
-    // 현재가 맵
+    // 현재가 맵 (바스켓 심볼별 최신 1건)
     const priceMap = {};
     for (const { symbol } of basket) {
       const { data: p } = await supa
@@ -105,7 +155,6 @@ export async function POST(req) {
       const sym = plan.symbol || plan?.symbol;
       const qtyBuy = plan.qty || 0;
 
-      // 메시지 구성(요구 포맷)
       const msgLines = [
         `날짜: ${baseDate}`,
         `연간 납입금액: ${yBudget ? yBudget.toLocaleString() + "원" : "-"}`,
@@ -114,14 +163,11 @@ export async function POST(req) {
         `${action === "BUY" ? "매수" : "대기"} 수량: ${qtyBuy ? `${qtyBuy}주` : "-"}`,
       ];
 
-      // 매도 권장
       if (sellSuggest[sym] > 0) {
         msgLines.push(`매도 권장: 보유 ${sellSuggest[sym]}주 (기준 ${Math.round(sellRatio*100)}%)`);
       } else {
         msgLines.push(`매도 권장: 보유수량의 ${Math.round(sellRatio*100)}% (최소 1주)`);
       }
-
-      const msg = msgLines.join("\n");
 
       const { data: ins, error: ie } = await supa
         .from("alerts")
@@ -129,7 +175,7 @@ export async function POST(req) {
           symbol: sym,
           rsi,
           level: level >= 0 ? `${level + 1}단계` : "해당없음",
-          message: msg,
+          message: msgLines.join("\n"),
           sent: false,
         })
         .select().single();
