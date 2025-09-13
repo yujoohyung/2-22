@@ -32,7 +32,7 @@ function useLivePrice(symbol, { intervalMs = 4000 } = {}) {
 
     const fetchOnce = async () => {
       try {
-        const res = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+        const res = await fetch(`/api/price/last?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
         if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
         if (aborted) return;
