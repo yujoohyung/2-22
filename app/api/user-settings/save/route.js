@@ -4,14 +4,18 @@ export const dynamic = "force-dynamic";
 
 import { createClient } from "@supabase/supabase-js";
 
-/** 서버용 supabase (URL은 SUPABASE_URL 우선, 없으면 NEXT_PUBLIC_SUPABASE_URL 폴백) */
-function createServerSupa() {
+/** 요청 토큰을 DB에도 전파하는 서버용 클라 생성 */
+function createServerSupaWithJwt(token) {
   const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
   const anon = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
   if (!url) throw new Error("Missing env: SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL");
   if (!/^https:\/\/.+\.supabase\.co\/?$/.test(url)) throw new Error("Bad SUPABASE_URL");
   if (!anon) throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  return createClient(url.replace(/\/$/, ""), anon);
+
+  // 이 클라로 수행하는 모든 DB 요청에 Authorization 헤더가 실려감 → RLS의 jwt_uid()가 동작
+  return createClient(url.replace(/\/$/, ""), anon, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  });
 }
 
 export async function POST(req) {
@@ -24,8 +28,11 @@ export async function POST(req) {
     }
 
     // 2) 토큰 검증 → user
-    const supa = createServerSupa();
-    const { data: userRes, error: ue } = await supa.auth.getUser(token);
+    const supaAuthOnly = createClient(
+      (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim().replace(/\/$/, ""),
+      (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim()
+    );
+    const { data: userRes, error: ue } = await supaAuthOnly.auth.getUser(token);
     if (ue) throw ue;
     const user = userRes?.user;
     if (!user) {
@@ -36,7 +43,8 @@ export async function POST(req) {
     const body = await req.json().catch(() => ({}));
     const yearly_budget = Number(body?.yearly_budget || 0);
 
-    // 4) upsert (RLS: user_id = auth.uid() 정책 필요)
+    // 4) DB 작업은 "JWT 전파된" 클라로 실행 (RLS 통과)
+    const supa = createServerSupaWithJwt(token);
     const { error } = await supa
       .from("user_settings")
       .upsert(
