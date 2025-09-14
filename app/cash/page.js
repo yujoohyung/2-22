@@ -3,14 +3,8 @@
 
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useAppStore } from "../store";
-import { createClient } from "@supabase/supabase-js";
+import { supa } from "../../lib/supaClient";
 import { saveUserSettings } from "../../lib/saveUserSettings"; // ✅ 추가
-
-/* ===== Supabase Client (클라) – 세션 토큰 얻기 용도만 ===== */
-const supa = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
 
 /* ===== Access Token 헬퍼 ===== */
 async function getAccessToken() {
