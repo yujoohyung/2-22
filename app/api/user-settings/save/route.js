@@ -2,64 +2,66 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+import { cookies } from "next/headers";
+import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
 
-/** 요청 토큰을 DB에도 전파하는 서버용 클라 생성 */
-function createServerSupaWithJwt(token) {
-  const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-  const anon = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
-  if (!url) throw new Error("Missing env: SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL");
-  if (!/^https:\/\/.+\.supabase\.co\/?$/.test(url)) throw new Error("Bad SUPABASE_URL");
-  if (!anon) throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_ANON_KEY");
-
-  // 이 클라로 수행하는 모든 DB 요청에 Authorization 헤더가 실려감 → RLS의 jwt_uid()가 동작
-  return createClient(url.replace(/\/$/, ""), anon, {
+/* ===== 유틸: 서버용 클라 생성 ===== */
+function getUrl() {
+  const raw = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+  if (!raw) throw new Error("Missing SUPABASE_URL");
+  return raw.replace(/\/$/, "");
+}
+function getAnon() {
+  const k = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+  if (!k) throw new Error("Missing NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  return k;
+}
+function createDbClientWithJwt(token) {
+  return createClient(getUrl(), getAnon(), {
     global: { headers: { Authorization: `Bearer ${token}` } },
   });
 }
 
 export async function POST(req) {
   try {
-    // 1) Authorization 헤더에서 토큰 추출
-    const authHdr = req.headers.get("authorization") || "";
-    const token = authHdr.replace(/^Bearer\s+/i, "").trim();
-    if (!token) {
-      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
-    }
-
-    // 2) 토큰 검증 → user
-    const supaAuthOnly = createClient(
-      (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim().replace(/\/$/, ""),
-      (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim()
-    );
-    const { data: userRes, error: ue } = await supaAuthOnly.auth.getUser(token);
-    if (ue) throw ue;
-    const user = userRes?.user;
-    if (!user) {
-      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
-    }
-
-    // 3) 본문 파싱
     const body = await req.json().catch(() => ({}));
     const yearly_budget = Number(body?.yearly_budget || 0);
 
-    // 4) DB 작업은 "JWT 전파된" 클라로 실행 (RLS 통과)
-    const supa = createServerSupaWithJwt(token);
+    // 1) 헤더 토큰 우선
+    const authHeader = req.headers.get("authorization") || "";
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+
+    if (token) {
+      // 토큰 검증
+      const supaAuthOnly = createClient(getUrl(), getAnon());
+      const { data: userRes, error: ue } = await supaAuthOnly.auth.getUser(token);
+      if (ue) throw ue;
+      const user = userRes?.user;
+      if (!user) return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
+
+      // DB 작업은 JWT 전파 클라로 (RLS: jwt_uid() 통과)
+      const supa = createDbClientWithJwt(token);
+      const { error } = await supa
+        .from("user_settings")
+        .upsert({ user_id: user.id, yearly_budget }, { onConflict: "user_id" });
+      if (error) throw error;
+
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "cache-control": "no-store" } });
+    }
+
+    // 2) 헤더 없으면 쿠키 기반 세션으로 인증 시도
+    const supa = createRouteHandlerClient({ cookies });
+    const { data: { user }, error: ue } = await supa.auth.getUser();
+    if (ue) throw ue;
+    if (!user) return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
+
     const { error } = await supa
       .from("user_settings")
-      .upsert(
-        {
-          user_id: user.id,
-          yearly_budget,
-        },
-        { onConflict: "user_id" }
-      );
+      .upsert({ user_id: user.id, yearly_budget }, { onConflict: "user_id" });
     if (error) throw error;
 
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { "cache-control": "no-store" },
-    });
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "cache-control": "no-store" } });
   } catch (e) {
     const msg = e?.message || String(e);
     const status = /unauthorized/i.test(msg) ? 401 : 500;
