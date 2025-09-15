@@ -39,41 +39,54 @@ export async function POST(req) {
     const headerToken = authHeader.replace(/^Bearer\s+/i, "").trim();
 
     if (headerToken) {
+      diag.path = "header";
       const supa = createDbClientWithJwt(headerToken);
-      const { data: userRes } = await supa.auth.getUser(); // 전역 헤더로 검증
+
+      // ★ 서버에선 반드시 토큰 인자로 넘겨야 함
+      const { data: userRes, error: ue } = await supa.auth.getUser(headerToken);
+      if (ue) throw ue;
       if (!userRes?.user) throw new Error("unauthorized");
+
       const { error } = await supa.rpc("upsert_my_user_settings", { new_budget: yearly_budget });
       if (error) throw error;
-      diag.path = "header";
+
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "cache-control": "no-store", "x-supabase-url": SUPA_URL, "x-auth-path": diag.path },
       });
     }
 
-    // (B) 쿠키에서 sb-access-token 직접 뽑아 JWT 전파
+    // (B) 쿠키에서 sb-access-token 직접 사용
     const ck = cookies();
     const cookieToken = ck.get("sb-access-token")?.value || "";
     if (cookieToken) {
+      diag.path = "cookie-token";
       const supa = createDbClientWithJwt(cookieToken);
-      const { data: userRes } = await supa.auth.getUser();
+
+      // ★ 여기서도 토큰 인자로 넘김
+      const { data: userRes, error: ue } = await supa.auth.getUser(cookieToken);
+      if (ue) throw ue;
       if (!userRes?.user) throw new Error("unauthorized");
+
       const { error } = await supa.rpc("upsert_my_user_settings", { new_budget: yearly_budget });
       if (error) throw error;
-      diag.path = "cookie-token";
+
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "cache-control": "no-store", "x-supabase-url": SUPA_URL, "x-auth-path": diag.path },
       });
     }
 
-    // (C) 폴백: auth-helpers로 쿠키 세션 사용
+    // (C) 폴백: auth-helpers (쿠키 세션)
+    diag.path = "cookie-helpers";
     const supaCookie = createRouteHandlerClient({ cookies });
-    const { data: { user } } = await supaCookie.auth.getUser();
+    const { data: { user }, error: ue } = await supaCookie.auth.getUser();
+    if (ue) throw ue;
     if (!user) throw new Error("unauthorized");
+
     const { error } = await supaCookie.rpc("upsert_my_user_settings", { new_budget: yearly_budget });
     if (error) throw error;
-    diag.path = "cookie-helpers";
+
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { "cache-control": "no-store", "x-supabase-url": SUPA_URL, "x-auth-path": diag.path },
