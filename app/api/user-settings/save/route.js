@@ -6,13 +6,11 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
 
-/* ===== Supabase env (서버/클라 동일 프로젝트 강제) ===== */
+/* Supabase env (서버/클라 동일 프로젝트 강제) */
 function getUrl() {
   const raw = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
   if (!raw) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
-  if (!/^https:\/\/.+\.supabase\.co\/?$/.test(raw)) {
-    throw new Error("Bad NEXT_PUBLIC_SUPABASE_URL");
-  }
+  if (!/^https:\/\/.+\.supabase\.co\/?$/.test(raw)) throw new Error("Bad NEXT_PUBLIC_SUPABASE_URL");
   return raw.replace(/\/$/, "");
 }
 function getAnon() {
@@ -25,7 +23,7 @@ const SUPA_ANON = getAnon();
 
 function createDbClientWithJwt(token) {
   return createClient(SUPA_URL, SUPA_ANON, {
-    // ★ 이 헤더로 PostgREST가 request.jwt.claim.* 를 인식 → RLS의 jwt_uid()가 동작
+    // 이 헤더가 있어야 PostgREST가 request.jwt.claim.sub를 인식 → RLS의 jwt_uid() 동작
     global: { headers: { Authorization: `Bearer ${token}` } },
   });
 }
@@ -42,50 +40,50 @@ export async function POST(req) {
     if (token) {
       const supa = createDbClientWithJwt(token);
 
-      // 토큰으로 유저 확인(전역 헤더에 이미 실려있으므로 인자 없이 호출)
+      // 토큰 유효성 확인(전역 헤더로 이미 전달되므로 인자 없이 호출)
       const { data: userRes, error: ue } = await supa.auth.getUser();
       if (ue) throw ue;
       if (!userRes?.user) {
         return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
           status: 401,
-          headers: { "x-supabase-url": SUPA_URL },
+          headers: { "x-supabase-url": SUPA_URL, "x-auth-path": "header" },
         });
       }
 
-      // ★ RLS-세이프: SECURITY DEFINER RPC 사용
-      const { error } = await supa.rpc("set_my_yearly_budget", { new_budget: yearly_budget });
+      // RPC 업서트 (없으면 생성, 있으면 갱신)
+      const { error } = await supa.rpc("upsert_my_user_settings", { new_budget: yearly_budget });
       if (error) throw error;
 
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
-        headers: { "cache-control": "no-store", "x-supabase-url": SUPA_URL },
+        headers: { "cache-control": "no-store", "x-supabase-url": SUPA_URL, "x-auth-path": "header" },
       });
     }
 
-    // 2) 헤더 없으면 쿠키 기반 세션
+    // 2) 헤더가 없으면 쿠키 기반 세션
     const supaCookie = createRouteHandlerClient({ cookies });
     const { data: { user }, error: ue } = await supaCookie.auth.getUser();
     if (ue) throw ue;
     if (!user) {
       return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
         status: 401,
-        headers: { "x-supabase-url": SUPA_URL },
+        headers: { "x-supabase-url": SUPA_URL, "x-auth-path": "cookie" },
       });
     }
 
-    const { error } = await supaCookie.rpc("set_my_yearly_budget", { new_budget: yearly_budget });
+    const { error } = await supaCookie.rpc("upsert_my_user_settings", { new_budget: yearly_budget });
     if (error) throw error;
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
-      headers: { "cache-control": "no-store", "x-supabase-url": SUPA_URL },
+      headers: { "cache-control": "no-store", "x-supabase-url": SUPA_URL, "x-auth-path": "cookie" },
     });
   } catch (e) {
     const msg = e?.message || String(e);
     const status = /unauthorized/i.test(msg) ? 401 : 500;
     return new Response(JSON.stringify({ ok: false, error: msg }), {
       status,
-      headers: { "x-supabase-url": SUPA_URL },
+      headers: { "x-supabase-url": SUPA_URL, "x-auth-path": "unknown" },
     });
   }
 }
