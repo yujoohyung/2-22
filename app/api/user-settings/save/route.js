@@ -27,6 +27,28 @@ function createDbClientWithJwt(token) {
   });
 }
 
+/* 브라우저 쿠키에서 Supabase 액세스 토큰을 ‘이름 변화’까지 포함해 넓게 탐색 */
+function getJwtFromCookies() {
+  try {
+    const all = cookies().getAll(); // [{name,value}, ...]
+    if (!all?.length) return "";
+
+    // 1) 표준 이름
+    let hit = all.find((c) => c.name === "sb-access-token");
+    if (hit?.value) return hit.value;
+
+    // 2) 구현 차이 방어: 이름에 access-token 들어간 모든 변형
+    hit = all.find((c) => /sb.*access[-_]?token/i.test(c.name));
+    if (hit?.value) return hit.value;
+
+    // 3) 구버전/커스텀 방어
+    hit = all.find((c) => /supabase.*token/i.test(c.name));
+    return hit?.value || "";
+  } catch {
+    return "";
+  }
+}
+
 export async function POST(req) {
   const diag = { path: "unknown" };
 
@@ -37,12 +59,11 @@ export async function POST(req) {
     // (A) Authorization 헤더 우선
     const authHeader = req.headers.get("authorization") || "";
     const headerToken = authHeader.replace(/^Bearer\s+/i, "").trim();
-
     if (headerToken) {
       diag.path = "header";
       const supa = createDbClientWithJwt(headerToken);
 
-      // ★ 서버에선 반드시 토큰 인자로 넘겨야 함
+      // ★ 서버에서는 토큰을 인자로 넘겨야 확실하게 유저가 검증됨
       const { data: userRes, error: ue } = await supa.auth.getUser(headerToken);
       if (ue) throw ue;
       if (!userRes?.user) throw new Error("unauthorized");
@@ -56,14 +77,12 @@ export async function POST(req) {
       });
     }
 
-    // (B) 쿠키에서 sb-access-token 직접 사용
-    const ck = cookies();
-    const cookieToken = ck.get("sb-access-token")?.value || "";
+    // (B) 쿠키에서 JWT 직접 추출(이름 변형까지 탐색)
+    const cookieToken = getJwtFromCookies();
     if (cookieToken) {
       diag.path = "cookie-token";
       const supa = createDbClientWithJwt(cookieToken);
 
-      // ★ 여기서도 토큰 인자로 넘김
       const { data: userRes, error: ue } = await supa.auth.getUser(cookieToken);
       if (ue) throw ue;
       if (!userRes?.user) throw new Error("unauthorized");
