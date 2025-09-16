@@ -3,18 +3,7 @@
 
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useAppStore } from "../store";
-import { supa } from "../../lib/supaClient";
 import { saveUserSettings } from "../../lib/saveUserSettings";
-
-/* ===== Access Token 헬퍼 ===== */
-async function getAccessToken() {
-  try {
-    const { data } = await supa.auth.getSession();
-    return data?.session?.access_token || null;
-  } catch {
-    return null;
-  }
-}
 
 /* ===== 가격 훅 (폴링 + 캐시 폴백) ===== */
 const MOCK_PRICE = { NASDAQ2X: 11500, BIGTECH2X: 9800 };
@@ -111,18 +100,12 @@ export default function CashDashboardPage() {
   const [loadingUser, setLoadingUser] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // 서버 API에서 “내 값” 로드 (토큰 인증 → user_id 고정)
+  // 서버 API에서 “내 값” 로드 (쿠키 인증)
   useEffect(() => {
     (async () => {
       setLoadingUser(true);
       try {
-        const token = await getAccessToken();
-        const headers = token
-          ? { Authorization: `Bearer ${token}`, "cache-control": "no-store" }
-          : { "cache-control": "no-store" }; // 토큰 없으면 쿠키 인증 시도
-
-        const res = await fetch("/api/user-settings/me", { headers });
-        // 401이면 로그인 필요
+        const res = await fetch("/api/user-settings/me", { cache: "no-store" });
         if (res.status === 401) throw new Error("로그인이 필요합니다.");
         const d = await res.json();
 
@@ -241,10 +224,8 @@ export default function CashDashboardPage() {
         },
       });
 
-      // 2) 서버 DB 저장 (쿠키/헤더 중 가용한 인증으로 진행)
-      await saveUserSettings({
-        yearly_budget: Number(yearlyInput || 0),
-      });
+      // 2) 서버 DB 저장 (쿠키 인증)
+      await saveUserSettings({ yearly_budget: Number(yearlyInput || 0) });
 
       alert("전역 저장 완료! (DB 반영 OK)");
     } catch (e) {
