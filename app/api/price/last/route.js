@@ -2,7 +2,8 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { createClient } from "@supabase/supabase-js";
+import "server-only";
+import { supa } from "@/lib/supaClient";
 
 export async function GET(req) {
   try {
@@ -12,10 +13,7 @@ export async function GET(req) {
       return new Response(JSON.stringify({ ok: false, error: "symbol required" }), { status: 400 });
     }
 
-    const supa = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE
-    );
+    const supa = getServiceClient();
 
     const { data, error } = await supa
       .from("prices")

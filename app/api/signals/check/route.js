@@ -1,5 +1,5 @@
 // app/api/signals/check/route.js
-import { createClient } from "@supabase/supabase-js";
+import { supa } from "@/lib/supaClient";
 import { calcRSI } from "../../../../lib/rsi.js";
 import { isCheckTimeKST } from "../../../../lib/market.js";
 import { decideBuyLevel, computeBasketQuantities } from "../../../../lib/formulas.js";
@@ -72,10 +72,7 @@ export async function POST(req) {
     // body는 사용하지 않음 (파서 에러 방지용)
     await req.json().catch(() => ({}));
 
-    const supa = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE
-    );
+    const supa = getServiceClient();
 
     // settings
     const { data: sets } = await supa.from("settings").select("*").limit(1).maybeSingle();
