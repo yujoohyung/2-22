@@ -1,9 +1,20 @@
-// app/cash/page.jsx
+// /app/cash/page.jsx
 "use client";
 
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useAppStore } from "../store";
+import { supa } from "../../lib/supaClient";
 import { saveUserSettings } from "../../lib/saveUserSettings";
+
+/* ===== Access Token 헬퍼 ===== */
+async function getAccessToken() {
+  try {
+    const { data } = await supa.auth.getSession();
+    return data?.session?.access_token || null;
+  } catch {
+    return null;
+  }
+}
 
 /* ===== 가격 훅 (폴링 + 캐시 폴백) ===== */
 const MOCK_PRICE = { NASDAQ2X: 11500, BIGTECH2X: 9800 };
@@ -100,22 +111,27 @@ export default function CashDashboardPage() {
   const [loadingUser, setLoadingUser] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // 서버 API에서 “내 값” 로드 (쿠키 인증)
+  // 서버 API에서 “내 값” 로드 (토큰 or 쿠키)
   useEffect(() => {
     (async () => {
       setLoadingUser(true);
       try {
-        const res = await fetch("/api/user-settings/me", { cache: "no-store" });
+        const token = await getAccessToken();
+        const headers = token
+          ? { Authorization: `Bearer ${token}`, "cache-control": "no-store" }
+          : { "cache-control": "no-store" };
+
+        const res = await fetch("/api/user-settings/me", { headers, cache: "no-store" });
         if (res.status === 401) throw new Error("로그인이 필요합니다.");
         const d = await res.json();
 
         if (d?.ok && d.data) {
           const yb = Number(d.data.yearly_budget ?? d.data.deposit ?? 0) || 0;
           setYearlyInput(yb);
-          setYearlyBudget(yb); // 전역 동기
+          setYearlyBudget(yb);
         }
-      } catch {
-        // 로그인 전이면 0 유지
+      } catch (e) {
+        console.debug("[cash] load me failed:", e?.message || e);
       } finally {
         setLoadingUser(false);
       }
@@ -149,7 +165,7 @@ export default function CashDashboardPage() {
     };
   }, [trades, priceNasdaq2x, priceBigtech2x]);
 
-  /* ✅ 표시용 rbHistory (단일 상태만 유지) */
+  /* 표시용 rbHistory */
   const [displayRb, setDisplayRb] = useState([]);
   useEffect(() => {
     const refresh = () => {
@@ -209,24 +225,16 @@ export default function CashDashboardPage() {
     if (saving) return;
     setSaving(true);
     try {
-      // 1) 로컬 전역 상태 갱신
+      // 전역 상태
       useAppStore.getState().setYearlyBudget(yearlyInput);
       setStepQty({
-        nasdaq2x: {
-          s1: qtyByStage.s1.nasdaq2x || 0,
-          s2: qtyByStage.s2.nasdaq2x || 0,
-          s3: qtyByStage.s3.nasdaq2x || 0,
-        },
-        bigtech2x: {
-          s1: qtyByStage.s1.bigtech2x || 0,
-          s2: qtyByStage.s2.bigtech2x || 0,
-          s3: qtyByStage.s3.bigtech2x || 0,
-        },
+        nasdaq2x: { s1: qtyByStage.s1.nasdaq2x || 0, s2: qtyByStage.s2.nasdaq2x || 0, s3: qtyByStage.s3.nasdaq2x || 0 },
+        bigtech2x:{ s1: qtyByStage.s1.bigtech2x || 0, s2: qtyByStage.s2.bigtech2x || 0, s3: qtyByStage.s3.bigtech2x || 0 },
       });
 
-      // 2) 서버 DB 저장 (쿠키 인증)
-      await saveUserSettings({ yearly_budget: Number(yearlyInput || 0) });
-
+      // 서버 DB 저장
+      const out = await saveUserSettings({ yearly_budget: Number(yearlyInput || 0) });
+      console.debug("[cash] save result:", out);
       alert("전역 저장 완료! (DB 반영 OK)");
     } catch (e) {
       alert(`저장 실패: ${e?.message || e}`);
@@ -250,7 +258,7 @@ export default function CashDashboardPage() {
               <Row label="2단계 매수" a={won(adjustedBuy.s2.nasdaq2x)} b={won(adjustedBuy.s2.bigtech2x)} tone="yellow" />
               <Row label="3단계 매수" a={won(adjustedBuy.s3.nasdaq2x)} b={won(adjustedBuy.s3.bigtech2x)} tone="yellow" />
               <Row label="월별 평균 예상 매입금" a={won(monthlyExpect.nasdaq2x)} b={won(monthlyExpect.bigtech2x)} tone="green" />
-              <Row label="1년 매수 금액 분배" a={won(yearlyInput * weights.nasdaq2x)} b={won(yearlyInput * weights.bigtech2x)} tone="strong" />
+              <Row label="1년 매수 금액 분배" a={won(yearlyInput * 0.6)} b={won(yearlyInput * 0.4)} tone="strong" />
             </tbody>
           </table>
           <div className="muted">
@@ -264,13 +272,10 @@ export default function CashDashboardPage() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
               <label style={{ fontSize: 13, color: "#555" }}>납입금</label>
               <input
-                type="number"
-                inputMode="numeric"
+                type="number" inputMode="numeric"
                 value={Number.isFinite(yearlyInput) ? yearlyInput : 0}
                 onChange={(e) => setYearlyInput(Number(e.target.value || 0))}
-                className="input"
-                placeholder="예: 20000000"
-                disabled={loadingUser || saving}
+                className="input" placeholder="예: 20000000" disabled={loadingUser || saving}
               />
               <button onClick={handleSaveGlobal} className="btn-primary" disabled={loadingUser || saving}>
                 {saving ? "저장중…" : "저장(전역 반영 + DB)"}
@@ -332,22 +337,15 @@ export default function CashDashboardPage() {
       <style jsx>{`
         .cash-root { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
         .h1 { font-size: 20px; font-weight: 800; }
-
         .grid-two { display: grid; grid-template-columns: 1fr; gap: 16px; }
         .right-col { display: grid; gap: 12px; }
         @media (min-width: 980px) { .grid-two { grid-template-columns: 1fr 340px; } }
-
         .card { background: #fff; border: 1px solid #eee; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
         .card-strong { border: 2px solid #9aa7b1; }
-
         .tbl { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
-        .thSmall {
-          position: sticky; top: 0; background: #f7f7f8; text-align: left;
-          font-size: 12px; font-weight: 700; color: #555; padding: 8px 10px; border-bottom: 1px solid #e5e7eb;
-        }
+        .thSmall { position: sticky; top: 0; background: #f7f7f8; text-align: left; font-size: 12px; font-weight: 700; color: #555; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; }
         .tdSmall { padding: 8px 10px; font-size: 13px; color: #111; white-space: nowrap; }
         .tdRight { text-align: right; }
-
         .input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; font-size: 14px; }
         .btn-primary { height: 42px; border-radius: 10px; font-weight: 700; cursor: pointer; background: #0ea5e9; color: #fff; border: 1px solid #0ea5e9; }
         .muted { padding: 8px 12px; font-size: 12px; color: #666; }

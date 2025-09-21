@@ -1,36 +1,43 @@
-// app/api/price/last/route.js
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
+// /app/api/price/last/route.js
 import "server-only";
-import { supa } from "@/lib/supaClient";
+import { NextResponse } from "next/server";
+import { getServiceClient } from "../../../../lib/auth-server.js"; // 서버 전용 클라 (상대경로)
 
 export async function GET(req) {
   try {
-    const url = new URL(req.url);
-    const symbol = url.searchParams.get("symbol");
-    if (!symbol) {
-      return new Response(JSON.stringify({ ok: false, error: "symbol required" }), { status: 400 });
-    }
-
     const supa = getServiceClient();
+
+    const { searchParams } = new URL(req.url);
+    const symbol = (searchParams.get("symbol") || "").toUpperCase();
+
+    if (!symbol) {
+      return NextResponse.json(
+        { ok: false, error: "symbol is required" },
+        { status: 400 }
+      );
+    }
 
     const { data, error } = await supa
       .from("prices")
-      .select("close, ts")
+      .select("symbol, ts, close")
       .eq("symbol", symbol)
       .order("ts", { ascending: false })
       .limit(1)
       .maybeSingle();
 
     if (error) throw error;
-    if (!data) return new Response(JSON.stringify({ ok: false, error: "no price" }), { status: 404 });
+    if (!data) {
+      return NextResponse.json(
+        { ok: false, error: "no data" },
+        { status: 404 }
+      );
+    }
 
-    return new Response(JSON.stringify({ ok: true, price: Number(data.close), asOf: data.ts }), {
-      status: 200,
-      headers: { "cache-control": "no-store" },
-    });
+    return NextResponse.json({ ok: true, data });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: String(e?.message || e) }), { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message || String(e) },
+      { status: 500 }
+    );
   }
 }
