@@ -1,4 +1,5 @@
 // app/api/user-settings/save/route.js
+import "server-only";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 

@@ -1,5 +1,6 @@
 // app/api/auth/signup/route.js
-import { createClient } from "@supabase/supabase-js";
+import "server-only";
+import { supa } from "@/lib/supaClient";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

@@ -2,6 +2,7 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+import "server-only";
 import { requireUser } from "../../../../lib/auth-server.js";
 
 export async function GET(req) {

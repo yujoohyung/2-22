@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { supa } from "@/lib/supaClient";
 
 export async function POST(req) {
   try {
