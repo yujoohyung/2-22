@@ -1,11 +1,12 @@
 // app/api/signals/check/route.js
-import { supa } from "@/lib/supaClient";
+import "server-only";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+import { getServiceClient } from "@/lib/auth-server";
 import { calcRSI } from "../../../../lib/rsi.js";
 import { isCheckTimeKST } from "../../../../lib/market.js";
 import { decideBuyLevel, computeBasketQuantities } from "../../../../lib/formulas.js";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 /* ---------- 보안 가드 ---------- */
 function assertCronAuth(req) {
@@ -22,11 +23,13 @@ function jsonError(e) {
 
 function kstDate(ts = new Date()) {
   const k = new Date(ts.getTime() + 9 * 3600 * 1000);
-  const p = n => String(n).padStart(2, "0");
-  return `${k.getUTCFullYear()}-${p(k.getUTCMonth()+1)}-${p(k.getUTCDate())}`;
+  const p = (n) => String(n).padStart(2, "0");
+  return `${k.getUTCFullYear()}-${p(k.getUTCMonth() + 1)}-${p(k.getUTCDate())}`;
 }
 
-export async function GET(req) { return POST(req); }
+export async function GET(req) {
+  return POST(req);
+}
 
 export async function POST(req) {
   try {
@@ -40,6 +43,7 @@ export async function POST(req) {
     // body는 사용하지 않음 (파서 에러 방지)
     await req.json().catch(() => ({}));
 
+    // ✅ 서버용(Service Role) 클라이언트
     const supa = getServiceClient();
 
     // settings
@@ -53,10 +57,9 @@ export async function POST(req) {
 
     // ⬇️ 점검 시간 우회 (force가 아니면 시간 체크)
     if (!force && !isCheckTimeKST(checkTimes, 2)) {
-      // 디버그용 현재 KST 시각도 함께 반환 (필요시 제거 가능)
       const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
       const p = (n) => String(n).padStart(2, "0");
-      const nowKST = `${now.getUTCFullYear()}-${p(now.getUTCMonth()+1)}-${p(now.getUTCDate())} ${p(now.getUTCHours())}:${p(now.getUTCMinutes())}`;
+      const nowKST = `${now.getUTCFullYear()}-${p(now.getUTCMonth() + 1)}-${p(now.getUTCDate())} ${p(now.getUTCHours())}:${p(now.getUTCMinutes())}`;
       return Response.json({ skip: "not-check-time", force, debug: { checkTimes, nowKST }, __ver: "check-2025-09-13-a" });
     }
 
@@ -67,7 +70,7 @@ export async function POST(req) {
     if (pe) throw pe;
 
     const arr = (aPrices || []).sort((x, y) => new Date(x.ts) - new Date(y.ts));
-    const closes = arr.map(x => Number(x.close));
+    const closes = arr.map((x) => Number(x.close)).filter(Number.isFinite);
     const rsi = calcRSI(closes, sets.rsi_period || 14);
     if (rsi == null) return Response.json({ ok: false, error: "not-enough-data", __ver: "check-2025-09-13-a" }, { status: 400 });
 
@@ -115,9 +118,9 @@ export async function POST(req) {
       ];
 
       if (sellSuggest[sym] > 0) {
-        msgLines.push(`매도 권장: 보유 ${sellSuggest[sym]}주 (기준 ${Math.round(sellRatio*100)}%)`);
+        msgLines.push(`매도 권장: 보유 ${sellSuggest[sym]}주 (기준 ${Math.round(sellRatio * 100)}%)`);
       } else {
-        msgLines.push(`매도 권장: 보유수량의 ${Math.round(sellRatio*100)}% (최소 1주)`);
+        msgLines.push(`매도 권장: 보유수량의 ${Math.round(sellRatio * 100)}% (최소 1주)`);
       }
 
       const { data: ins, error: ie } = await supa
