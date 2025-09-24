@@ -1,46 +1,28 @@
-// /app/api/user-settings/save/route.js
 import "server-only";
-import { NextResponse } from "next/server";
-import { requireUser } from "../../../../lib/auth-server.js";
+import { requireUser } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req) {
   try {
+    const { user, supa } = await requireUser(req);
     const { yearly_budget } = await req.json().catch(() => ({}));
-    if (yearly_budget == null) {
-      return NextResponse.json({ ok: false, error: "yearly_budget is required" }, { status: 400 });
-    }
+    const yb = Number(yearly_budget ?? 0);
 
-    // 1) 유저 인증 (Bearer 우선, 없으면 쿠키)
-    const { supa, user, token } = await requireUser(req);
+    // 1) RPC
+    const { error: rpcErr } = await supa.rpc("upsert_my_user_settings", { new_budget: yb });
+    if (!rpcErr) return Response.json({ ok: true, via: "rpc" });
 
-    // 2) 내 줄 업서트 (RLS: jwt_uid() = user_id 정책 충족)
-    const up = await supa
+    // 2) 폴백(정책이 auth.uid()와 맞으면 이것도 통과)
+    const { error: upErr } = await supa
       .from("user_settings")
-      .upsert(
-        {
-          user_id: user.id,
-          yearly_budget: Number(yearly_budget || 0),
-        },
-        { onConflict: "user_id" }
-      )
-      .select()
-      .single();
+      .upsert({ user_id: user.id, yearly_budget: yb, notify_enabled: true }, { onConflict: "user_id" });
 
-    if (up.error) throw up.error;
-
-    return NextResponse.json({
-      ok: true,
-      via: token ? "header" : "cookie",
-      received: { yearly_budget: Number(yearly_budget || 0) },
-      row: up.data || null,
-    });
+    if (upErr) throw upErr;
+    return Response.json({ ok: true, via: "fallback-upsert" });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: String(e?.message || e) },
-      { status: /unauthorized/i.test(String(e?.message || e)) ? 401 : 500 }
-    );
+    console.error("[user-settings/save] ERR:", e);
+    return Response.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }
