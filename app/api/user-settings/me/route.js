@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req) {
   try {
     const { user, supa } = await requireUser(req);
+
     const { data, error } = await supa
       .from("user_settings")
       .select("*")
@@ -15,8 +16,8 @@ export async function GET(req) {
       .maybeSingle();
 
     if (error) throw error;
-    // 없으면 빈 객체
-    return Response.json({ ok: true, data: data || {} });
+
+    return Response.json({ ok: true, data: data || {} }, { status: 200 });
   } catch (e) {
     const msg = e?.message || String(e);
     const code = /unauthorized/i.test(msg) ? 401 : 500;
