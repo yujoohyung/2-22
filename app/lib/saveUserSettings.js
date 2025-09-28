@@ -1,7 +1,7 @@
 // /lib/saveUserSettings.js
 "use client";
 
-import { supa } from "./supaClient";
+import { getBrowserClient } from "@/lib/supaClient";
 
 export async function saveUserSettings(payload) {
   const safe = (v) => (v === undefined ? null : v);
@@ -12,7 +12,7 @@ export async function saveUserSettings(payload) {
   // 토큰 붙일 수 있으면 붙이고, 아니면 쿠키 인증에 맡김
   let headers = { "content-type": "application/json" };
   try {
-    const { data } = await supa.auth.getSession();
+    const { data } = await getBrowserClient().auth.getSession();
     const token = data?.session?.access_token;
     if (token) headers = { ...headers, Authorization: `Bearer ${token}` };
   } catch {}
