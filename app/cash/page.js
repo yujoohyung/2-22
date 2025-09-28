@@ -4,7 +4,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
-import { saveUserSettings } from "../../lib/saveUserSettings";
+import { saveUserSettings } from "@/lib/saveUserSettings";
 
 /* ===== Access Token 헬퍼 ===== */
 async function getAccessToken() {
