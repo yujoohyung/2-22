@@ -13,7 +13,7 @@
     "@supabase/auth-helpers-nextjs": "^0.10.0",
     "@supabase/supabase-js": "^2.54.0",
     "antd": "^5.26.7",
-    "next": "^15.4.5",
+    "next": "15.4.10",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "ws": "^8.18.3",
