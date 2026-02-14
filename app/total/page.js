@@ -4,27 +4,21 @@ import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 
-/* ===== 유틸: 원화 포맷터 ===== */
 const won = (n) => Number(Math.round(n ?? 0)).toLocaleString("ko-KR") + "원";
 
 export default function TotalPage() {
   const { yearlyBudget, setYearlyBudget } = useAppStore();
   
-  // 상태 관리
-  // nasdaqData: 나스닥 (418660) - RSI, MA200, 현재가
+  // 데이터 상태
   const [nasdaqData, setNasdaqData] = useState({ rsi: null, ma200: 0, price: 0 });
-  // bigtechData: 빅테크 (465610) - RSI, 현재가
   const [bigtechData, setBigtechData] = useState({ rsi: null, price: 0 });
-  
   const [loading, setLoading] = useState(true);
 
   // 1. 데이터 로드 (API 호출)
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setLoading(true);
-
-        // A. 예치금 설정 가져오기
+        // A. 예치금 설정
         const { data: { session } } = await supa.auth.getSession();
         if (session) {
           const res = await fetch("/api/user-settings/me", {
@@ -36,8 +30,7 @@ export default function TotalPage() {
           }
         }
 
-        // B. 나스닥 (418660) 데이터 가져오기 (RSI, MA200, Price)
-        // ma200 API가 RSI와 현재가까지 모두 계산해서 반환하도록 수정되었음을 가정
+        // B. 나스닥 (418660) 데이터 (MA200 API 하나로 RSI, 가격, 200일선 모두 해결)
         const resN = await fetch(`/api/kis/ma200?symbol=418660`);
         const jsonN = await resN.json();
         if (jsonN.ok) {
@@ -48,13 +41,13 @@ export default function TotalPage() {
           });
         }
 
-        // C. 빅테크 (465610) 데이터 가져오기 (RSI, Price)
+        // C. 빅테크 (465610) 데이터
         const resB = await fetch(`/api/kis/ma200?symbol=465610`);
         const jsonB = await resB.json();
         if (jsonB.ok) {
           setBigtechData({
             rsi: jsonB.rsi,
-            price: jsonB.price // 빅테크는 MA200 판단 로직이 없으므로 price, rsi만 사용
+            price: jsonB.price
           });
         }
 
@@ -66,81 +59,69 @@ export default function TotalPage() {
     };
 
     fetchData();
-    
-    // 1분마다 갱신 (실시간성 유지)
-    const interval = setInterval(fetchData, 60000);
+    const interval = setInterval(fetchData, 60000); // 1분마다 갱신
     return () => clearInterval(interval);
   }, [setYearlyBudget]);
 
-  /* ===== 2. 판단 로직 (나스닥 기준) ===== */
+  /* ===== 2. 판단 로직 ===== */
   
-  // ★★★ 테스트용 (주석 풀면 강제 적용) ★★★
-  // const TEST_RSI = 40; // 1단계 테스트 (43 미만)
+  // ★★★ 테스트용: 주석을 풀면 1단계 매수 화면을 미리 볼 수 있음 ★★★
+  // const TEST_RSI = 40; 
   
   const rsiN = (typeof TEST_RSI !== 'undefined') ? TEST_RSI : nasdaqData.rsi;
   const priceN = nasdaqData.price;
   const ma200N = nasdaqData.ma200;
 
-  // 매매 신호 (우선순위: 매도 > 매수 > 관망)
   let signalType = "HOLD"; // SELL, BUY, HOLD
   let stage = 0; // 1, 2, 3
   let signalText = "관망";
   let signalColor = "#6b7280"; // 회색
 
-  // 매도: 나스닥 현재가 < 200일선
+  // 매도 우선: 가격 < 200일선
   if (priceN > 0 && ma200N > 0 && priceN < ma200N) {
     signalType = "SELL";
     signalText = "매도 (30% 비중)";
-    signalColor = "#ef4444"; // 빨강
+    signalColor = "#ef4444"; 
   } 
-  // 매수: 나스닥 RSI 기준
+  // 매수: RSI 기준
   else if (rsiN !== null) {
     if (rsiN < 30) {
       signalType = "BUY";
       stage = 3;
       signalText = "매수 / 3단계";
-      signalColor = "#dc2626"; // 진한 빨강
+      signalColor = "#dc2626";
     } else if (rsiN < 36) {
       signalType = "BUY";
       stage = 2;
       signalText = "매수 / 2단계";
-      signalColor = "#f59e0b"; // 주황
+      signalColor = "#f59e0b";
     } else if (rsiN < 43) {
       signalType = "BUY";
       stage = 1;
       signalText = "매수 / 1단계";
-      signalColor = "#eab308"; // 노랑
+      signalColor = "#eab308";
     }
   }
 
   /* ===== 3. 수량 계산 ===== */
-  // 예치금 페이지 공식과 동일 (60:40 배분)
   const monthNasdaq = (yearlyBudget * 0.6) / 12;
   const monthBigTech = (yearlyBudget * 0.4) / 12;
   const factor = 0.92;
 
-  // 단계별 비율 (관망일 때도 1단계 기준 수량을 보여주기 위해 ratio 설정)
+  // 비율 설정 (관망일 때도 1단계 기준 수량을 보여주기 위해 기본값 설정 가능)
+  // 현재 로직: 매수 신호가 있을 때 그 단계 비율 적용
+  // 관망 상태일 때: '-' 표시 (사용자가 헷갈리지 않도록 명확한 신호 때만 수량 표시)
   let ratio = 0;
   if (stage === 3) ratio = 0.60;
   else if (stage === 2) ratio = 0.26;
-  else ratio = 0.14; // 기본 1단계(14%) 기준 (관망 또는 1단계)
+  else if (stage === 1) ratio = 0.14;
 
-  // 목표 금액
   const targetAmtN = monthNasdaq * ratio * factor;
   const targetAmtB = monthBigTech * ratio * factor;
 
-  // 수량 계산
-  // 매도 신호일 때는 계산 안 함.
-  // 관망 상태일 때도 "1단계 기준 수량"을 보여주고 싶다면 아래 조건 수정 가능.
-  // 여기서는 "매수 신호"일 때 해당 단계 수량을, "관망"일 때는 "-"를 표시하되
-  // 요청하신 대로 "관망이라 확인이 안 된다"는 점을 고려하여,
-  // 관망 상태에서도 '1단계 진입 시 예상 수량'을 흐릿하게라도 보여주는 것이 좋을 수 있으나,
-  // 명확한 시그널 전달을 위해 일단은 매수/매도 시그널에 맞춰 표시합니다.
-  // (만약 관망 때도 보고 싶으시면 signalType check를 제거하면 됩니다)
-  
-  const qtyN = (priceN > 0) ? Math.floor(targetAmtN / priceN) : 0;
+  const qtyN = (priceN > 0 && ratio > 0) ? Math.floor(targetAmtN / priceN) : 0;
   const priceB = bigtechData.price;
-  const qtyB = (priceB > 0) ? Math.floor(targetAmtB / priceB) : 0;
+  const qtyB = (priceB > 0 && ratio > 0) ? Math.floor(targetAmtB / priceB) : 0;
 
   /* ===== 4. 표시 텍스트 ===== */
   let displayN = "-";
@@ -153,12 +134,11 @@ export default function TotalPage() {
     displayN = `${qtyN}주 매수`;
     displayB = `${qtyB}주 매수`;
   } else {
-    // 관망 상태
     displayN = "관망";
     displayB = "관망";
   }
 
-  if (loading) return <div style={{ padding: 20 }}>데이터 로딩중...</div>;
+  if (loading) return <div style={{ padding: 20 }}>데이터를 불러오는 중입니다...</div>;
 
   return (
     <div className="total-wrap">
@@ -276,10 +256,8 @@ export default function TotalPage() {
             gap: 12px;
             padding: 16px;
           }
-          /* 모바일에서 라벨-값 줄바꿈 처리 */
           .label { font-size: 13px; }
           .val { font-size: 15px; }
-          
           .action-col { padding: 20px 10px; }
           .act-val { font-size: 18px; }
         }
