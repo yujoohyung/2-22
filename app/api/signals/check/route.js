@@ -63,19 +63,29 @@ export async function POST(req) {
       return Response.json({ skip: "not-check-time", force, debug: { checkTimes, nowKST }, __ver: "check-2025-09-13-a" });
     }
 
-    // main 가격 → RSI
+    // main 가격 → RSI 및 MA200 계산을 위해 250개(넉넉히) 가져오기
     const { data: aPrices, error: pe } = await supa
       .from("prices")
       .select("ts, close")
       .eq("symbol", main)
       .order("ts", { ascending: false })
-      .limit(200);
+      .limit(250);
     if (pe) throw pe;
 
     const arr = (aPrices || []).sort((x, y) => new Date(x.ts) - new Date(y.ts));
     const closes = arr.map((x) => Number(x.close)).filter(Number.isFinite);
+    
+    // RSI 계산
     const rsi = calcRSI(closes, rsiPeriod);
     if (rsi == null) return Response.json({ ok: false, error: "not-enough-data", __ver: "check-2025-09-13-a" }, { status: 400 });
+
+    // ✅ 200일 이동평균선 (MA200) 계산
+    let ma200 = null;
+    if (closes.length >= 200) {
+      const last200 = closes.slice(-200); // 최근 200개
+      const sum = last200.reduce((a, b) => a + b, 0);
+      ma200 = sum / 200;
+    }
 
     const level = decideBuyLevel(rsi, buyLevels); // -1 이면 매수 아님
     const action = level < 0 ? "NONE" : "BUY";
@@ -120,6 +130,7 @@ export async function POST(req) {
         `날짜: ${baseDate}`,
         `연간 납입금액: ${yBudget ? yBudget.toLocaleString() + "원" : "-"}`,
         `RSI 단계: ${level >= 0 ? `${level + 1}단계 (${rsi.toFixed(2)})` : "해당없음"}`,
+        `이평선(MA200): ${ma200 ? Math.round(ma200) : "-"}`,
         `나스닥/빅테크: 심볼=${sym}`,
         `${action === "BUY" ? "매수" : "대기"} 수량: ${qtyBuy ? `${qtyBuy}주` : "-"}`,
       ];
@@ -145,7 +156,8 @@ export async function POST(req) {
       if (!ie && ins) created.push(ins);
     }
 
-    return Response.json({ ok: true, rsi, level, created, __ver: "check-2025-09-13-a" });
+    // ✅ 결과에 ma200 포함하여 반환
+    return Response.json({ ok: true, rsi, ma200, level, created, __ver: "check-2025-09-13-a" });
   } catch (e) {
     return jsonError(e);
   }
