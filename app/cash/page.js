@@ -145,14 +145,12 @@ export default function CashPage() {
           <div className="th">구분</div>
           <div className="th">
             나스닥 2배 <br/>
-            <span className="code">418660</span> <br/>
             <span className="price-tag">
               {priceN > 0 ? won(priceN) : "(로딩중...)"}
             </span>
           </div>
           <div className="th">
             빅테크 2배 <br/>
-            <span className="code">465610</span> <br/>
             <span className="price-tag">
               {priceB > 0 ? won(priceB) : "(로딩중...)"}
             </span>
@@ -173,22 +171,32 @@ export default function CashPage() {
         input { flex: 1; padding: 14px; font-size: 18px; border: 1px solid #d1d5db; border-radius: 8px; font-weight: 700; color: #111; }
         button { padding: 0 24px; background: #2563eb; color: #fff; font-weight: 700; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; }
         
-        .info-row { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: #4b5563; background: #f9fafb; padding: 12px; border-radius: 8px; }
-        .info-row div { display: flex; justify-content: space-between; }
+        .info-row { display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: #4b5563; background: #f9fafb; padding: 16px; border-radius: 8px; }
+        .info-row div { display: flex; justify-content: space-between; align-items: center; }
         .info-row .label { font-weight: 500; }
-        .info-row .val { font-weight: 700; color: #2563eb; }
+        .info-row .val { font-weight: 700; color: #2563eb; font-size: 15px; }
 
         .table-card { background: #fff; border-radius: 16px; border: 1px solid #e5e7eb; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
-        .header-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; background: #f9fafb; padding: 16px; border-bottom: 1px solid #e5e7eb; align-items: center; }
-        .th { font-weight: 700; font-size: 14px; color: #4b5563; text-align: right; line-height: 1.4; }
+        .header-row { display: grid; grid-template-columns: 1.1fr 1fr 1fr; background: #f9fafb; padding: 16px; border-bottom: 1px solid #e5e7eb; align-items: center; }
+        .th { font-weight: 700; font-size: 14px; color: #4b5563; text-align: right; line-height: 1.4; word-break: keep-all; }
         .th:first-child { text-align: left; }
         
-        .code { font-size: 11px; color: #9ca3af; font-weight: 400; }
-        .price-tag { font-size: 13px; color: #2563eb; font-weight: 700; }
+        .price-tag { font-size: 13px; color: #2563eb; font-weight: 700; display: block; margin-top: 2px; }
         
+        /* 모바일 최적화 (너비 480px 이하) */
         @media (max-width: 480px) {
           .cash-container { padding: 12px; }
+          .title { font-size: 20px; margin-bottom: 16px; }
+          
+          .input-card { padding: 16px; }
+          input { font-size: 16px; padding: 10px; }
+          button { padding: 0 16px; font-size: 14px; }
+          
+          .header-row { padding: 12px 10px; font-size: 12px; }
           .th { font-size: 12px; }
+          .price-tag { font-size: 12px; }
+          
+          .info-row { font-size: 13px; padding: 12px; }
         }
       `}</style>
     </div>
@@ -197,16 +205,33 @@ export default function CashPage() {
 
 function Row({ label, q1, q2, a1, a2 }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", padding: "16px", borderBottom: "1px solid #f3f4f6", alignItems: "center" }}>
-      <div style={{ fontWeight: "600", fontSize: "13px", color: "#374151" }}>{label}</div>
-      <div style={{ textAlign: "right" }}>
-        <div style={{ fontSize: "16px", fontWeight: "800", color: "#111" }}>{q1}주</div>
-        <div style={{ fontSize: "11px", color: "#9ca3af" }}>({won(a1)})</div>
+    <>
+      <div className="row">
+        <div className="label-col">{label}</div>
+        <div className="val-col">
+          <div className="qty">{q1}주</div>
+          <div className="amt">({won(a1)})</div>
+        </div>
+        <div className="val-col">
+          <div className="qty">{q2}주</div>
+          <div className="amt">({won(a2)})</div>
+        </div>
       </div>
-      <div style={{ textAlign: "right" }}>
-        <div style={{ fontSize: "16px", fontWeight: "800", color: "#111" }}>{q2}주</div>
-        <div style={{ fontSize: "11px", color: "#9ca3af" }}>({won(a2)})</div>
-      </div>
-    </div>
+      <style jsx>{`
+        .row { display: grid; grid-template-columns: 1.1fr 1fr 1fr; padding: 16px; border-bottom: 1px solid #f3f4f6; align-items: center; }
+        .label-col { font-weight: 600; font-size: 13px; color: #374151; word-break: keep-all; }
+        .val-col { text-align: right; }
+        
+        .qty { font-size: 15px; font-weight: 800; color: #111; }
+        .amt { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+
+        @media (max-width: 480px) {
+          .row { padding: 12px 10px; }
+          .label-col { font-size: 12px; }
+          .qty { font-size: 14px; }
+          .amt { font-size: 10px; }
+        }
+      `}</style>
+    </>
   );
 }
