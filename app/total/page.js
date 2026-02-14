@@ -85,7 +85,7 @@ export default function TotalPage() {
   /* ===== 4. 로직 판단 ===== */
   
   // ★★★ 테스트 영역: 아래 주석을 풀면 1단계 매수 화면을 미리 볼 수 있습니다 ★★★
-  // const TEST_RSI = 40;  // 1단계 테스트 (43 미만)
+  const TEST_RSI = 40;  // 1단계 테스트 (43 미만)
   // const TEST_RSI = 35;  // 2단계 테스트 (36 미만)
   // const TEST_RSI = 25;  // 3단계 테스트 (30 미만)
   
