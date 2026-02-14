@@ -36,9 +36,9 @@ export default function TotalPage() {
   const [rsi, setRsi] = useState(null); // 나스닥 RSI
   const [loading, setLoading] = useState(true);
 
-  // 2. 실시간 가격 (나스닥, 빅테크)
-  const { price: priceN } = useLivePrice("418660"); // 나스닥 2배
-  const { price: priceB } = useLivePrice("465610"); // 빅테크 2배
+  // 2. 실시간 가격 (나스닥: 418660, 빅테크: 465610)
+  const { price: priceN } = useLivePrice("418660"); 
+  const { price: priceB } = useLivePrice("465610"); 
 
   // 3. 데이터 로드 (MA200, RSI, 예산)
   useEffect(() => {
@@ -84,31 +84,40 @@ export default function TotalPage() {
 
   /* ===== 4. 로직 판단 ===== */
   
+  // ★★★ 테스트 영역: 아래 주석을 풀면 1단계 매수 화면을 미리 볼 수 있습니다 ★★★
+  // const TEST_RSI = 40;  // 1단계 테스트 (43 미만)
+  // const TEST_RSI = 35;  // 2단계 테스트 (36 미만)
+  // const TEST_RSI = 25;  // 3단계 테스트 (30 미만)
+  
+  // 실제 RSI 사용 (테스트 값이 있으면 그것을 사용)
+  const currentRsi = (typeof TEST_RSI !== 'undefined') ? TEST_RSI : rsi;
+
+
   // (1) 매매 신호 (우선순위: 매도 > 매수 > 관망)
   let signalType = "HOLD"; // SELL, BUY, HOLD
   let stage = 0; // 1, 2, 3
   let signalText = "관망";
   let signalColor = "#6b7280"; // 회색
 
-  // 매도 조건: 나스닥 현재가가 200일선 미만 (가격이 로딩된 상태에서만)
+  // 매도 조건: 나스닥 현재가가 200일선 미만
   if (priceN > 0 && ma200 > 0 && priceN < ma200) {
     signalType = "SELL";
-    signalText = "매도 (30% 매도)";
-    signalColor = "#ef4444"; // 빨강
+    signalText = "매도 (30% 비중)";
+    signalColor = "#ef4444"; // 빨강 (경고)
   } 
   // 매수 조건: RSI 기준
-  else if (rsi !== null) {
-    if (rsi < 30) {
+  else if (currentRsi !== null) {
+    if (currentRsi < 30) {
       signalType = "BUY";
       stage = 3;
       signalText = "매수 / 3단계";
       signalColor = "#dc2626"; // 진한 빨강
-    } else if (rsi < 36) {
+    } else if (currentRsi < 36) {
       signalType = "BUY";
       stage = 2;
       signalText = "매수 / 2단계";
       signalColor = "#f59e0b"; // 주황
-    } else if (rsi < 43) {
+    } else if (currentRsi < 43) {
       signalType = "BUY";
       stage = 1;
       signalText = "매수 / 1단계";
@@ -116,7 +125,7 @@ export default function TotalPage() {
     }
   }
 
-  // (2) 수량 계산 (매수일 때만 계산)
+  // (2) 수량 계산 (매수일 때만 계산 - 예치금 페이지와 동일 공식)
   // 예산 배분: 나스닥 60%, 빅테크 40%
   const monthNasdaq = (yearlyBudget * 0.6) / 12;
   const monthBigTech = (yearlyBudget * 0.4) / 12;
@@ -128,10 +137,11 @@ export default function TotalPage() {
   if (stage === 2) ratio = 0.26;
   if (stage === 3) ratio = 0.60;
 
-  // 금액 및 수량
+  // 목표 매수 금액
   const targetAmtN = monthNasdaq * ratio * factor;
   const targetAmtB = monthBigTech * ratio * factor;
 
+  // 수량 (소수점 버림)
   const qtyN = (signalType === "BUY" && priceN > 0) ? Math.floor(targetAmtN / priceN) : 0;
   const qtyB = (signalType === "BUY" && priceB > 0) ? Math.floor(targetAmtB / priceB) : 0;
 
@@ -160,8 +170,8 @@ export default function TotalPage() {
         {/* Row 1: 나스닥 정보 */}
         <div className="t-row">
           <div className="label">나스닥 RSI</div>
-          <div className="val rsi" style={{ color: rsi < 43 ? "#dc2626" : "#111" }}>
-            {rsi ? rsi.toFixed(1) : "-"}
+          <div className="val rsi" style={{ color: currentRsi < 43 ? "#dc2626" : "#111" }}>
+            {currentRsi ? currentRsi.toFixed(1) : "-"}
           </div>
           <div className="label">현재가</div>
           <div className="val">{won(priceN)}</div>
@@ -170,7 +180,7 @@ export default function TotalPage() {
         {/* Row 2: 빅테크 정보 */}
         <div className="t-row">
           <div className="label">빅테크 RSI</div>
-          <div className="val">-</div> {/* 빅테크 RSI는 별도 계산 필요 (현재는 -) */}
+          <div className="val">-</div>
           <div className="label">현재가</div>
           <div className="val">{won(priceB)}</div>
         </div>
