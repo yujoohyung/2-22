@@ -1,4 +1,3 @@
-// /app/cash/page.jsx
 "use client";
 
 import { useMemo, useState, useEffect, useRef } from "react";
@@ -6,189 +5,163 @@ import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 import { saveUserSettings } from "@/lib/saveUserSettings";
 
-/* ===== Access Token 헬퍼 ===== */
-async function getAccessToken() {
-  try {
-    const { data } = await supa.auth.getSession();
-    return data?.session?.access_token || null;
-  } catch { return null; }
-}
-
-/* ===== 가격 훅 (폴링 + 캐시 폴백) ===== */
-function useLivePrice(symbol, { intervalMs = 4000 } = {}) {
-  const [price, setPrice] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const timerRef = useRef(null);
-
+/* ===== 가격 훅 (API 호출) ===== */
+function useLivePrice(symbol) {
+  const [price, setPrice] = useState(0);
+  
   useEffect(() => {
-    let aborted = false;
-    const fetchOnce = async () => {
+    // 1. 심볼 매핑 (실제 KIS 종목코드로 변경 필요)
+    // NASDAQ2X -> 418660 (예시)
+    // BIGTECH2X -> 종목코드 입력
+    let code = symbol;
+    if (symbol === "NASDAQ2X") code = "418660"; 
+    
+    // 초기 로드 및 주기적 갱신
+    const fetchPrice = async () => {
       try {
-        const res = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+        const res = await fetch(`/api/price?symbol=${code}`);
         const data = await res.json();
-        if (aborted) return;
-        const p = Number(data?.price);
-        if (Number.isFinite(p)) setPrice(p);
-      } catch (e) { console.error("Price fetch error", e); }
-      finally { if (!aborted) setLoading(false); }
+        if (data.price) setPrice(data.price);
+      } catch (e) {
+        console.error("Price fetch failed", e);
+      }
     };
-    fetchOnce();
-    timerRef.current = setInterval(fetchOnce, intervalMs);
-    return () => { clearInterval(timerRef.current); aborted = true; };
-  }, [symbol, intervalMs]);
 
-  return { price, loading };
+    fetchPrice();
+    const interval = setInterval(fetchPrice, 5000); // 5초마다 갱신
+    return () => clearInterval(interval);
+  }, [symbol]);
+
+  return { price };
 }
 
-/* ===== 포맷터 ===== */
 const won = (n) => Number(Math.round(n ?? 0)).toLocaleString("ko-KR") + "원";
-const pct = (n) => `${Number(n ?? 0).toFixed(2)}%`;
 
 export default function CashDashboardPage() {
-  const { yearlyBudget, setYearlyBudget, setStepQty, trades } = useAppStore();
+  const { yearlyBudget, setYearlyBudget, setStepQty } = useAppStore();
   const [yearlyInput, setYearlyInput] = useState(yearlyBudget || 0);
-  const [loadingUser, setLoadingUser] = useState(true);
-  const [saving, setSaving] = useState(false);
 
-  // 서버에서 예치금 로드
-  useEffect(() => {
-    (async () => {
-      try {
-        const token = await getAccessToken();
-        const res = await fetch("/api/user-settings/me", { 
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-          cache: "no-store" 
-        });
-        const d = await res.json();
-        if (d?.ok && d.data) {
-          const yb = Number(d.data.yearly_budget || 0);
-          setYearlyInput(yb);
-          setYearlyBudget(yb);
-        }
-      } finally { setLoadingUser(false); }
-    })();
-  }, [setYearlyBudget]);
-
-  // 실시간 가격
+  // 실시간 가격 (나스닥, 빅테크)
   const { price: priceN } = useLivePrice("NASDAQ2X");
   const { price: priceB } = useLivePrice("BIGTECH2X");
 
-  /* ===== 핵심 계산 로직 (요청하신 공식 적용) ===== */
-  const mAvg = useMemo(() => yearlyInput / 12, [yearlyInput]); // 월별 평균 예상 매입금
+  // 초기 예치금 로드
+  useEffect(() => {
+    (async () => {
+      const { data } = await supa.auth.getSession();
+      if (data?.session) {
+        const res = await fetch("/api/user-settings/me", {
+          headers: { Authorization: `Bearer ${data.session.access_token}` }
+        });
+        const d = await res.json();
+        if (d?.data?.yearly_budget) {
+          setYearlyInput(d.data.yearly_budget);
+          setYearlyBudget(d.data.yearly_budget);
+        }
+      }
+    })();
+  }, [setYearlyBudget]);
+
+  /* ===== 계산 로직 ===== */
+  const mAvg = yearlyInput / 12;
   const factor = 0.92;
 
-  const calcs = useMemo(() => {
-    // 나스닥: 14%, 26%, 60%
-    const n1 = mAvg * 0.14 * factor;
-    const n2 = mAvg * 0.26 * factor;
-    const n3 = mAvg * 0.60 * factor;
+  // 금액 계산
+  const n1_amt = mAvg * 0.14 * factor;
+  const n2_amt = mAvg * 0.26 * factor;
+  const n3_amt = mAvg * 0.60 * factor;
+  
+  const b1_amt = mAvg * 0.14 * factor;
+  const b2_amt = mAvg * 0.14 * factor;
+  const b3_amt = mAvg * 0.26 * factor;
 
-    // 빅테크: 14%, 14%, 26%
-    const b1 = mAvg * 0.14 * factor;
-    const b2 = mAvg * 0.14 * factor;
-    const b3 = mAvg * 0.26 * factor;
+  // 수량 계산
+  const n1_qty = priceN ? Math.floor(n1_amt / priceN) : 0;
+  const n2_qty = priceN ? Math.floor(n2_amt / priceN) : 0;
+  const n3_qty = priceN ? Math.floor(n3_amt / priceN) : 0;
 
-    return {
-      amt: {
-        n: [n1, n2, n3],
-        b: [b1, b2, b3]
-      },
-      qty: {
-        n: [priceN ? Math.floor(n1 / priceN) : 0, priceN ? Math.floor(n2 / priceN) : 0, priceN ? Math.floor(n3 / priceN) : 0],
-        b: [priceB ? Math.floor(b1 / priceB) : 0, priceB ? Math.floor(b2 / priceB) : 0, priceB ? Math.floor(b3 / priceB) : 0]
-      }
-    };
-  }, [mAvg, priceN, priceB]);
+  const b1_qty = priceB ? Math.floor(b1_amt / priceB) : 0;
+  const b2_qty = priceB ? Math.floor(b2_amt / priceB) : 0;
+  const b3_qty = priceB ? Math.floor(b3_amt / priceB) : 0;
 
   const handleSave = async () => {
-    setSaving(true);
-    try {
-      setYearlyBudget(yearlyInput);
-      setStepQty({
-        nasdaq2x: { s1: calcs.qty.n[0], s2: calcs.qty.n[1], s3: calcs.qty.n[2] },
-        bigtech2x: { s1: calcs.qty.b[0], s2: calcs.qty.b[1], s3: calcs.qty.b[2] }
-      });
-      await saveUserSettings({ yearly_budget: yearlyInput });
-      alert("저장되었습니다.");
-    } finally { setSaving(false); }
+    setYearlyBudget(yearlyInput);
+    setStepQty({
+        nasdaq2x: { s1: n1_qty, s2: n2_qty, s3: n3_qty },
+        bigtech2x: { s1: b1_qty, s2: b2_qty, s3: b3_qty }
+    });
+    await saveUserSettings({ yearly_budget: yearlyInput });
+    alert("저장되었습니다.");
   };
 
   return (
-    <div className="cash-container">
-      <h1 className="title">예치금 및 매수설정</h1>
-
-      {/* 1년 납입금액 입력부 */}
-      <section className="input-card">
-        <h2 className="section-title">1년 납입금액 설정</h2>
+    <div className="container">
+      <h1 className="title">예치금 및 매수 설정</h1>
+      
+      <div className="input-section">
+        <label>1년 총 납입금</label>
         <div className="input-group">
           <input 
             type="number" 
             value={yearlyInput} 
-            onChange={(e) => setYearlyInput(Number(e.target.value))}
-            placeholder="총 예치금 입력"
+            onChange={(e) => setYearlyInput(Number(e.target.value))} 
           />
-          <button onClick={handleSave} disabled={saving}>저장</button>
+          <button onClick={handleSave}>저장</button>
         </div>
-        <p className="monthly-info">월평균 예상 매입금: {won(mAvg)}</p>
-      </section>
+        <div className="sub-info">월 평균 매입금: {won(mAvg)}</div>
+      </div>
 
-      {/* 매수 금액 및 수량 표 */}
-      <section className="table-card">
-        <div className="table-header">
+      <div className="table-card">
+        <div className="row header">
           <div className="col">구분</div>
-          <div className="col">나스닥100 2x</div>
-          <div className="col">빅테크 7</div>
+          <div className="col">나스닥 2배 ({won(priceN)})</div>
+          <div className="col">빅테크 2배 ({won(priceB)})</div>
         </div>
-        <div className="table-body">
-          <Row label="1단계 매수금" a={won(calcs.amt.n[0])} b={won(calcs.amt.b[0])} />
-          <Row label="2단계 매수금" a={won(calcs.amt.n[1])} b={won(calcs.amt.b[1])} />
-          <Row label="3단계 매수금" a={won(calcs.amt.n[2])} b={won(calcs.amt.b[2])} />
-          <Row label="1단계 수량" a={`${calcs.qty.n[0]}주`} b={`${calcs.qty.b[0]}주`} highlight />
-          <Row label="2단계 수량" a={`${calcs.qty.n[1]}주`} b={`${calcs.qty.b[1]}주`} highlight />
-          <Row label="3단계 수량" a={`${calcs.qty.n[2]}주`} b={`${calcs.qty.b[2]}주`} highlight />
+
+        {/* 1단계 */}
+        <div className="row">
+          <div className="col label">1단계 수량 (rsi 43)</div>
+          <div className="col val">{n1_qty}주 <span className="amt">({won(n1_amt)})</span></div>
+          <div className="col val">{b1_qty}주 <span className="amt">({won(b1_amt)})</span></div>
         </div>
-        <div className="price-footer">
-          실시간가: 나스닥 {won(priceN)} / 빅테크 {won(priceB)}
+
+        {/* 2단계 */}
+        <div className="row">
+          <div className="col label">2단계 수량 (rsi 36)</div>
+          <div className="col val">{n2_qty}주 <span className="amt">({won(n2_amt)})</span></div>
+          <div className="col val">{b2_qty}주 <span className="amt">({won(b2_amt)})</span></div>
         </div>
-      </section>
+
+        {/* 3단계 */}
+        <div className="row">
+          <div className="col label">3단계 수량 (rsi 30)</div>
+          <div className="col val">{n3_qty}주 <span className="amt">({won(n3_amt)})</span></div>
+          <div className="col val">{b3_qty}주 <span className="amt">({won(b3_amt)})</span></div>
+        </div>
+      </div>
 
       <style jsx>{`
-        .cash-container { max-width: 800px; margin: 0 auto; padding: 16px; display: grid; gap: 20px; }
-        .title { font-size: 24px; font-weight: 800; }
-        .input-card, .table-card { background: #fff; border: 1px solid #eee; border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-        .section-title { font-size: 16px; color: #666; marginBottom: 12px; }
-        .input-group { display: flex; gap: 8px; }
-        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 18px; font-weight: 700; width: 100%; }
-        button { padding: 0 24px; background: #007aff; color: #fff; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
-        .monthly-info { margin-top: 10px; font-size: 14px; color: #007aff; font-weight: 600; }
+        .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+        .title { font-size: 24px; font-weight: 800; margin-bottom: 20px; }
         
-        /* 모바일 겹침 방지 테이블 스타일 */
-        .table-header { display: grid; grid-template-columns: 1.2fr 1fr 1fr; border-bottom: 2px solid #eee; padding-bottom: 8px; margin-bottom: 8px; font-weight: 800; font-size: 14px; }
-        .price-footer { margin-top: 16px; padding-top: 12px; border-top: 1px dashed #eee; font-size: 12px; color: #888; text-align: right; }
+        .input-section { background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #eee; }
+        .input-group { display: flex; gap: 10px; margin-top: 8px; }
+        input { flex: 1; padding: 12px; font-size: 18px; border: 1px solid #ddd; border-radius: 8px; }
+        button { padding: 0 20px; background: #2563eb; color: white; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+        .sub-info { margin-top: 8px; color: #2563eb; font-size: 14px; font-weight: 600; }
+
+        .table-card { background: #fff; border-radius: 12px; border: 1px solid #eee; overflow: hidden; }
+        .row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; border-bottom: 1px solid #f0f0f0; padding: 16px; align-items: center; }
+        .header { background: #f9fafb; font-weight: 800; color: #4b5563; font-size: 14px; }
+        .label { font-weight: 600; color: #374151; font-size: 15px; }
+        .val { text-align: right; font-weight: 800; font-size: 16px; color: #111; }
+        .amt { font-size: 12px; color: #9ca3af; font-weight: 400; display: block; }
         
         @media (max-width: 480px) {
-          .table-header { font-size: 12px; }
-          .cash-container { padding: 10px; }
-          input { font-size: 16px; }
+           .row { font-size: 13px; padding: 12px 8px; }
+           .val { font-size: 14px; }
         }
       `}</style>
-    </div>
-  );
-}
-
-function Row({ label, a, b, highlight }) {
-  return (
-    <div style={{ 
-      display: "grid", 
-      gridTemplateColumns: "1.2fr 1fr 1fr", 
-      padding: "10px 0", 
-      borderBottom: "1px solid #f9f9f9",
-      fontSize: "14px",
-      alignItems: "center"
-    }}>
-      <div style={{ color: "#555", fontWeight: 600 }}>{label}</div>
-      <div style={{ textAlign: "right", fontWeight: 800, color: highlight ? "#007aff" : "#111" }}>{a}</div>
-      <div style={{ textAlign: "right", fontWeight: 800, color: highlight ? "#007aff" : "#111" }}>{b}</div>
     </div>
   );
 }

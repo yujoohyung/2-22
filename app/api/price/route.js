@@ -1,19 +1,42 @@
-export const runtime = "edge";
+import { NextResponse } from "next/server";
+import { getKisToken } from "@/lib/kis.server";
 
-const MOCK = { NASDAQ2X: 11500, BIGTECH2X: 9800 };
+export const dynamic = "force-dynamic";
 
 export async function GET(req) {
   const { searchParams } = new URL(req.url);
-  const sym = (searchParams.get("symbol") || "").toUpperCase();
-  // TODO: 실제 가격 소스 연동 (KIS, DB 등)
-  const price = MOCK[sym] ?? null;
-  if (!price) {
-    return new Response(JSON.stringify({ ok:false, error:"symbol not found" }), {
-      status: 404,
-      headers: { "content-type":"application/json; charset=utf-8" }
+  const symbol = searchParams.get("symbol"); // 종목코드 (예: 418660)
+
+  // 편의상 심볼 매핑 (사용자가 NASDAQ2X라고 보내면 실제 종목코드로 변환)
+  // 실제 사용하시는 종목코드로 변경해주세요.
+  let code = symbol;
+  if (symbol === "NASDAQ2X") code = "418660"; // 예시: TIGER 미국나스닥100레버리지(합성) 등 실제 코드
+  if (symbol === "BIGTECH2X") code = "418660"; // 예시 코드 (수정 필요)
+
+  if (!code) return NextResponse.json({ price: 0 });
+
+  try {
+    const token = await getKisToken();
+    
+    // 주식 현재가 시세 (FHKST01010100)
+    const url = `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=J&fid_input_iscd=${code}`;
+    
+    const res = await fetch(url, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        appkey: process.env.KIS_APP_KEY,
+        appsecret: process.env.KIS_APP_SECRET,
+        tr_id: "FHKST01010100"
+      },
+      cache: "no-store"
     });
+
+    const data = await res.json();
+    const price = Number(data?.output?.stck_prpr || 0); // stck_prpr: 현재가
+
+    return NextResponse.json({ price });
+  } catch (e) {
+    console.error("Price API Error:", e);
+    return NextResponse.json({ price: 0 });
   }
-  return new Response(JSON.stringify({ ok:true, price, asOf: new Date().toISOString() }), {
-    headers: { "content-type":"application/json; charset=utf-8", "cache-control":"no-store" }
-  });
 }
