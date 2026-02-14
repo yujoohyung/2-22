@@ -4,21 +4,24 @@ import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 
+/* ===== 포맷터 ===== */
 const won = (n) => Number(Math.round(n ?? 0)).toLocaleString("ko-KR") + "원";
 
 export default function TotalPage() {
   const { yearlyBudget, setYearlyBudget } = useAppStore();
   
-  // 데이터 상태
+  // 상태 관리
   const [nasdaqData, setNasdaqData] = useState({ rsi: null, ma200: 0, price: 0 });
   const [bigtechData, setBigtechData] = useState({ rsi: null, price: 0 });
   const [loading, setLoading] = useState(true);
 
-  // 1. 데이터 로드 (API 호출)
+  // 1. 데이터 로드
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // A. 예치금 설정
+        setLoading(true);
+
+        // A. 예치금
         const { data: { session } } = await supa.auth.getSession();
         if (session) {
           const res = await fetch("/api/user-settings/me", {
@@ -30,25 +33,18 @@ export default function TotalPage() {
           }
         }
 
-        // B. 나스닥 (418660) 데이터 (MA200 API 하나로 RSI, 가격, 200일선 모두 해결)
+        // B. 나스닥 (418660)
         const resN = await fetch(`/api/kis/ma200?symbol=418660`);
         const jsonN = await resN.json();
         if (jsonN.ok) {
-          setNasdaqData({
-            rsi: jsonN.rsi,
-            ma200: jsonN.ma200,
-            price: jsonN.price
-          });
+          setNasdaqData({ rsi: jsonN.rsi, ma200: jsonN.ma200, price: jsonN.price });
         }
 
-        // C. 빅테크 (465610) 데이터
+        // C. 빅테크 (465610)
         const resB = await fetch(`/api/kis/ma200?symbol=465610`);
         const jsonB = await resB.json();
         if (jsonB.ok) {
-          setBigtechData({
-            rsi: jsonB.rsi,
-            price: jsonB.price
-          });
+          setBigtechData({ rsi: jsonB.rsi, price: jsonB.price });
         }
 
       } catch (e) {
@@ -59,86 +55,87 @@ export default function TotalPage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 60000); // 1분마다 갱신
+    const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);
   }, [setYearlyBudget]);
 
   /* ===== 2. 판단 로직 ===== */
-  
-  // ★★★ 테스트용: 주석을 풀면 1단계 매수 화면을 미리 볼 수 있음 ★★★
-  // const TEST_RSI = 40; 
-  
+  // 테스트용: const TEST_RSI = 40; 
   const rsiN = (typeof TEST_RSI !== 'undefined') ? TEST_RSI : nasdaqData.rsi;
   const priceN = nasdaqData.price;
   const ma200N = nasdaqData.ma200;
 
   let signalType = "HOLD"; // SELL, BUY, HOLD
-  let stage = 0; // 1, 2, 3
+  let stage = 0; 
   let signalText = "관망";
   let signalColor = "#6b7280"; // 회색
 
-  // 매도 우선: 가격 < 200일선
+  // 매도 조건
   if (priceN > 0 && ma200N > 0 && priceN < ma200N) {
     signalType = "SELL";
     signalText = "매도 (30% 비중)";
-    signalColor = "#ef4444"; 
+    signalColor = "#ef4444"; // 빨강
   } 
-  // 매수: RSI 기준
+  // 매수 조건
   else if (rsiN !== null) {
     if (rsiN < 30) {
       signalType = "BUY";
       stage = 3;
       signalText = "매수 / 3단계";
-      signalColor = "#dc2626";
+      signalColor = "#dc2626"; // 진한 빨강
     } else if (rsiN < 36) {
       signalType = "BUY";
       stage = 2;
       signalText = "매수 / 2단계";
-      signalColor = "#f59e0b";
+      signalColor = "#f59e0b"; // 주황
     } else if (rsiN < 43) {
       signalType = "BUY";
       stage = 1;
       signalText = "매수 / 1단계";
-      signalColor = "#eab308";
+      signalColor = "#eab308"; // 노랑
+    } else {
+      // 관망 상태지만 텍스트 표시
+      signalType = "HOLD";
+      signalText = "관망 (RSI 안정)";
+      signalColor = "#10b981"; // 초록
     }
   }
 
-  /* ===== 3. 수량 계산 ===== */
+  /* ===== 3. 수량 계산 (관망이어도 1단계 기준 표시) ===== */
   const monthNasdaq = (yearlyBudget * 0.6) / 12;
   const monthBigTech = (yearlyBudget * 0.4) / 12;
   const factor = 0.92;
 
-  // 비율 설정 (관망일 때도 1단계 기준 수량을 보여주기 위해 기본값 설정 가능)
-  // 현재 로직: 매수 신호가 있을 때 그 단계 비율 적용
-  // 관망 상태일 때: '-' 표시 (사용자가 헷갈리지 않도록 명확한 신호 때만 수량 표시)
-  let ratio = 0;
-  if (stage === 3) ratio = 0.60;
-  else if (stage === 2) ratio = 0.26;
-  else if (stage === 1) ratio = 0.14;
+  // 적용할 단계 (매수 신호면 그 단계, 아니면 1단계 기준)
+  let applyStage = stage > 0 ? stage : 1; 
+  
+  let ratio = 0.14; // 기본 1단계
+  if (applyStage === 2) ratio = 0.26;
+  if (applyStage === 3) ratio = 0.60;
 
   const targetAmtN = monthNasdaq * ratio * factor;
   const targetAmtB = monthBigTech * ratio * factor;
 
-  const qtyN = (priceN > 0 && ratio > 0) ? Math.floor(targetAmtN / priceN) : 0;
+  // 가격이 0이면 수량 0
+  const qtyN = priceN > 0 ? Math.floor(targetAmtN / priceN) : 0;
   const priceB = bigtechData.price;
-  const qtyB = (priceB > 0 && ratio > 0) ? Math.floor(targetAmtB / priceB) : 0;
+  const qtyB = priceB > 0 ? Math.floor(targetAmtB / priceB) : 0;
 
-  /* ===== 4. 표시 텍스트 ===== */
+  /* ===== 4. 표시 텍스트 생성 ===== */
   let displayN = "-";
   let displayB = "-";
 
   if (signalType === "SELL") {
     displayN = "30% 매도";
     displayB = "30% 매도";
-  } else if (signalType === "BUY") {
-    displayN = `${qtyN}주 매수`;
-    displayB = `${qtyB}주 매수`;
   } else {
-    displayN = "관망";
-    displayB = "관망";
+    // 매수 or 관망 일 때
+    const prefix = signalType === "HOLD" ? "(1단계 기준) " : "";
+    displayN = `${prefix}${qtyN}주 매수`;
+    displayB = `${prefix}${qtyB}주 매수`;
   }
 
-  if (loading) return <div style={{ padding: 20 }}>데이터를 불러오는 중입니다...</div>;
+  if (loading) return <div style={{ padding: 20 }}>데이터 로딩중...</div>;
 
   return (
     <div className="total-wrap">
@@ -196,7 +193,8 @@ export default function TotalPage() {
 
       <div className="footer-info">
         * 매수 기준: 나스닥 RSI (43/36/30 미만)<br/>
-        * 매도 기준: 나스닥 가격이 200일 이평선({won(ma200N)}) 미만 시
+        * 매도 기준: 나스닥 가격이 200일 이평선({won(ma200N)}) 미만 시<br/>
+        * 관망 시에는 1단계 기준 예상 수량을 보여줍니다.
       </div>
 
       <style jsx>{`
@@ -229,10 +227,9 @@ export default function TotalPage() {
 
         .highlight { background-color: #f9fafb; }
 
-        /* 실행 가이드 행 (2컬럼) */
         .action-row {
           display: grid;
-          grid-template-columns: 1fr 1fr; /* 2등분 */
+          grid-template-columns: 1fr 1fr; 
           gap: 0;
           padding: 0;
         }
@@ -244,11 +241,10 @@ export default function TotalPage() {
         .action-col:last-child { border-right: none; }
         
         .act-label { font-size: 14px; color: #6b7280; margin-bottom: 8px; font-weight: 600; }
-        .act-val { font-size: 20px; font-weight: 800; }
+        .act-val { font-size: 20px; font-weight: 800; word-break: keep-all; }
 
         .footer-info { margin-top: 20px; font-size: 13px; color: #9ca3af; line-height: 1.6; }
 
-        /* 모바일 대응 */
         @media (max-width: 480px) {
           .total-wrap { padding: 12px; }
           .t-row { 
@@ -259,7 +255,7 @@ export default function TotalPage() {
           .label { font-size: 13px; }
           .val { font-size: 15px; }
           .action-col { padding: 20px 10px; }
-          .act-val { font-size: 18px; }
+          .act-val { font-size: 16px; }
         }
       `}</style>
     </div>
