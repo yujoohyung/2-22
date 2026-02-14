@@ -4,30 +4,49 @@ import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 
-/* ===== 유틸 ===== */
+/* ===== 유틸: 원화 포맷터 ===== */
 const won = (n) => Number(Math.round(n ?? 0)).toLocaleString("ko-KR") + "원";
 
-/* ===== 컴포넌트 ===== */
+/* ===== 실시간 가격 훅 ===== */
+function useLivePrice(code) {
+  const [price, setPrice] = useState(0);
+  useEffect(() => {
+    if (!code) return;
+    const fetchPrice = async () => {
+      try {
+        const res = await fetch(`/api/price?symbol=${code}`);
+        const data = await res.json();
+        if (data.price) setPrice(data.price);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchPrice();
+    const t = setInterval(fetchPrice, 5000);
+    return () => clearInterval(t);
+  }, [code]);
+  return { price };
+}
+
 export default function TotalPage() {
   const { yearlyBudget, setYearlyBudget } = useAppStore();
   
-  // 상태 관리
+  // 1. 상태 관리
   const [ma200, setMa200] = useState(0);
-  const [currentPrice, setCurrentPrice] = useState(0); // API로 가져온 현재가
-  const [rsi, setRsi] = useState(null);
+  const [rsi, setRsi] = useState(null); // 나스닥 RSI
   const [loading, setLoading] = useState(true);
 
-  // 설정값 (나스닥 2배 종목 코드 - 실제 코드로 변경하세요)
-  // 예: TIGER 미국나스닥100레버리지(합성) = 418660
-  const TARGET_CODE = "418660"; 
+  // 2. 실시간 가격 (나스닥, 빅테크)
+  const { price: priceN } = useLivePrice("418660"); // 나스닥 2배
+  const { price: priceB } = useLivePrice("465610"); // 빅테크 2배
 
-  // 1. 데이터 로드 (MA200, RSI, 예치금)
+  // 3. 데이터 로드 (MA200, RSI, 예산)
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true);
 
-        // A. 예치금 가져오기
+        // A. 예치금 설정
         const { data: { session } } = await supa.auth.getSession();
         if (session) {
           const res = await fetch("/api/user-settings/me", {
@@ -39,15 +58,14 @@ export default function TotalPage() {
           }
         }
 
-        // B. MA200 및 현재가 가져오기 (새로 만든 API)
-        const maRes = await fetch(`/api/kis/ma200?symbol=${TARGET_CODE}`);
+        // B. MA200 (나스닥 418660 기준)
+        const maRes = await fetch(`/api/kis/ma200?symbol=418660`);
         const maJson = await maRes.json();
         if (maJson.ok) {
           setMa200(maJson.ma200);
-          setCurrentPrice(maJson.currentPrice);
         }
 
-        // C. RSI 가져오기 (기존 API 활용)
+        // C. RSI (나스닥 기준)
         const sigRes = await fetch("/api/signals/check?force=1");
         const sigJson = await sigRes.json();
         if (sigJson?.ok) {
@@ -55,7 +73,7 @@ export default function TotalPage() {
         }
 
       } catch (e) {
-        console.error("Error loading total data:", e);
+        console.error("Data load failed:", e);
       } finally {
         setLoading(false);
       }
@@ -64,149 +82,198 @@ export default function TotalPage() {
     fetchData();
   }, [setYearlyBudget]);
 
-  /* ===== 2. 계산 로직 ===== */
-  // 예산 배분 (14% / 26% / 60%)
-  const mAvg = yearlyBudget / 12; // 월 평균
-  const factor = 0.92; // 환율 등 보정 계수
+  /* ===== 4. 로직 판단 ===== */
   
-  const budget1 = mAvg * 0.14 * factor;
-  const budget2 = mAvg * 0.26 * factor;
-  const budget3 = mAvg * 0.60 * factor;
+  // (1) 매매 신호 (우선순위: 매도 > 매수 > 관망)
+  let signalType = "HOLD"; // SELL, BUY, HOLD
+  let stage = 0; // 1, 2, 3
+  let signalText = "관망";
+  let signalColor = "#6b7280"; // 회색
 
-  // 수량 계산 (현재가가 0이면 0)
-  const qty1 = currentPrice ? Math.floor(budget1 / currentPrice) : 0;
-  const qty2 = currentPrice ? Math.floor(budget2 / currentPrice) : 0;
-  const qty3 = currentPrice ? Math.floor(budget3 / currentPrice) : 0;
-
-  /* ===== 3. 상태 판단 ===== */
-  let status = "관망";
-  let statusColor = "#9ca3af"; // 회색
-  let activeStep = 0;
-
-  if (currentPrice > 0 && ma200 > 0 && currentPrice < ma200) {
-    status = "🚨 200일선 이탈 (매도/관망)";
-    statusColor = "#ef4444"; // 빨강
-  } else if (rsi !== null) {
+  // 매도 조건: 나스닥 현재가가 200일선 미만 (가격이 로딩된 상태에서만)
+  if (priceN > 0 && ma200 > 0 && priceN < ma200) {
+    signalType = "SELL";
+    signalText = "매도 (30% 매도)";
+    signalColor = "#ef4444"; // 빨강
+  } 
+  // 매수 조건: RSI 기준
+  else if (rsi !== null) {
     if (rsi < 30) {
-      status = "🔥 3단계 매수 (풀매수)";
-      statusColor = "#dc2626"; // 진한 빨강
-      activeStep = 3;
+      signalType = "BUY";
+      stage = 3;
+      signalText = "매수 / 3단계";
+      signalColor = "#dc2626"; // 진한 빨강
     } else if (rsi < 36) {
-      status = "🟠 2단계 매수";
-      statusColor = "#f59e0b"; // 주황
-      activeStep = 2;
+      signalType = "BUY";
+      stage = 2;
+      signalText = "매수 / 2단계";
+      signalColor = "#f59e0b"; // 주황
     } else if (rsi < 43) {
-      status = "🟡 1단계 매수";
-      statusColor = "#eab308"; // 노랑
-      activeStep = 1;
-    } else {
-      status = "🟢 홀딩 / 관망";
-      statusColor = "#10b981"; // 초록
+      signalType = "BUY";
+      stage = 1;
+      signalText = "매수 / 1단계";
+      signalColor = "#eab308"; // 노랑
     }
   }
 
-  if (loading) return <div style={{ padding: 20 }}>데이터를 불러오는 중...</div>;
+  // (2) 수량 계산 (매수일 때만 계산)
+  // 예산 배분: 나스닥 60%, 빅테크 40%
+  const monthNasdaq = (yearlyBudget * 0.6) / 12;
+  const monthBigTech = (yearlyBudget * 0.4) / 12;
+  const factor = 0.92;
+
+  // 단계별 비율
+  let ratio = 0;
+  if (stage === 1) ratio = 0.14;
+  if (stage === 2) ratio = 0.26;
+  if (stage === 3) ratio = 0.60;
+
+  // 금액 및 수량
+  const targetAmtN = monthNasdaq * ratio * factor;
+  const targetAmtB = monthBigTech * ratio * factor;
+
+  const qtyN = (signalType === "BUY" && priceN > 0) ? Math.floor(targetAmtN / priceN) : 0;
+  const qtyB = (signalType === "BUY" && priceB > 0) ? Math.floor(targetAmtB / priceB) : 0;
+
+  // (3) 최종 표시 텍스트 생성
+  let displayN = "-";
+  let displayB = "-";
+
+  if (signalType === "SELL") {
+    displayN = "30% 매도";
+    displayB = "30% 매도";
+  } else if (signalType === "BUY") {
+    displayN = `${qtyN}주 매수`;
+    displayB = `${qtyB}주 매수`;
+  } else {
+    displayN = "관망";
+    displayB = "관망";
+  }
+
+  if (loading) return <div style={{ padding: 20 }}>데이터 로딩중...</div>;
 
   return (
-    <div className="total-container">
-      <h1 className="page-title">종합 투자 현황</h1>
+    <div className="total-wrap">
+      <h1 className="title">종합 투자 현황</h1>
 
-      {/* 상단 카드 영역 */}
-      <div className="card-grid">
-        <StatusCard title="현재 RSI" value={rsi ? rsi.toFixed(1) : "-"} color={rsi < 30 ? "red" : "black"} />
-        <StatusCard title="현재 주가" value={won(currentPrice)} />
-        <StatusCard title="200일 이평선" value={won(ma200)} subValue={currentPrice < ma200 ? "이탈 발생" : "지지 중"} subColor={currentPrice < ma200 ? "red" : "blue"} />
-        <StatusCard title="매매 신호" value={status} color={statusColor} bold />
+      <div className="status-table">
+        {/* Row 1: 나스닥 정보 */}
+        <div className="t-row">
+          <div className="label">나스닥 RSI</div>
+          <div className="val rsi" style={{ color: rsi < 43 ? "#dc2626" : "#111" }}>
+            {rsi ? rsi.toFixed(1) : "-"}
+          </div>
+          <div className="label">현재가</div>
+          <div className="val">{won(priceN)}</div>
+        </div>
+
+        {/* Row 2: 빅테크 정보 */}
+        <div className="t-row">
+          <div className="label">빅테크 RSI</div>
+          <div className="val">-</div> {/* 빅테크 RSI는 별도 계산 필요 (현재는 -) */}
+          <div className="label">현재가</div>
+          <div className="val">{won(priceB)}</div>
+        </div>
+
+        {/* Row 3: 판단 & MA200 */}
+        <div className="t-row highlight">
+          <div className="label">판단</div>
+          <div className="val signal" style={{ color: signalColor }}>
+            {signalText}
+          </div>
+          <div className="label">200일선</div>
+          <div className="val" style={{ color: priceN < ma200 ? "#ef4444" : "#2563eb" }}>
+            {won(ma200)}
+          </div>
+        </div>
+
+        {/* Row 4: 실행 가이드 */}
+        <div className="t-row action-row">
+          <div className="action-col">
+            <div className="act-label">나스닥 (418660)</div>
+            <div className="act-val" style={{ color: signalType === "SELL" ? "blue" : "#dc2626" }}>
+              {displayN}
+            </div>
+          </div>
+          <div className="action-col">
+            <div className="act-label">빅테크 (465610)</div>
+            <div className="act-val" style={{ color: signalType === "SELL" ? "blue" : "#dc2626" }}>
+              {displayB}
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* 전략 테이블 */}
-      <div className="strategy-section">
-        <h2 className="section-title">RSI 매수 전략 (월 적립식)</h2>
-        <div className="strategy-table">
-          <div className="table-head">
-            <div>단계</div>
-            <div>매수 조건</div>
-            <div>금액</div>
-            <div>수량</div>
-          </div>
-          
-          <StrategyRow 
-            step="1단계" 
-            cond="RSI 43 미만" 
-            amt={won(budget1)} 
-            qty={`${qty1}주`} 
-            active={activeStep === 1} 
-          />
-          <StrategyRow 
-            step="2단계" 
-            cond="RSI 36 미만" 
-            amt={won(budget2)} 
-            qty={`${qty2}주`} 
-            active={activeStep === 2} 
-          />
-          <StrategyRow 
-            step="3단계" 
-            cond="RSI 30 미만" 
-            amt={won(budget3)} 
-            qty={`${qty3}주`} 
-            active={activeStep === 3} 
-          />
-        </div>
-        <p className="info-text">
-          * 매도 기준: 주가가 200일 이평선({won(ma200)}) 아래로 내려갈 때
-        </p>
+      <div className="footer-info">
+        * 매수 기준: 나스닥 RSI (43/36/30 미만)<br/>
+        * 매도 기준: 나스닥 가격이 200일 이평선({won(ma200)}) 미만 시
       </div>
 
       <style jsx>{`
-        .total-container { max-width: 800px; margin: 0 auto; padding: 20px; font-family: -apple-system, sans-serif; }
-        .page-title { font-size: 24px; font-weight: 800; margin-bottom: 24px; color: #111; }
-        
-        .card-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 24px; }
-        
-        .strategy-section { background: #fff; border: 1px solid #e5e7eb; border-radius: 16px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .section-title { font-size: 18px; font-weight: 700; margin-bottom: 16px; color: #374151; }
-        
-        .strategy-table { display: flex; flexDirection: column; }
-        .table-head { display: grid; grid-template-columns: 1fr 1.5fr 1fr 1fr; padding-bottom: 12px; border-bottom: 2px solid #f3f4f6; font-weight: 700; color: #6b7280; font-size: 14px; text-align: right; }
-        .table-head div:first-child { text-align: left; }
-        .table-head div:nth-child(2) { text-align: center; }
+        .total-wrap { max-width: 800px; margin: 0 auto; padding: 20px; font-family: -apple-system, sans-serif; }
+        .title { font-size: 24px; font-weight: 800; margin-bottom: 24px; color: #111; }
 
-        .info-text { margin-top: 16px; font-size: 13px; color: #9ca3af; text-align: right; }
+        .status-table { 
+          display: flex; 
+          flex-direction: column; 
+          border: 1px solid #e5e7eb; 
+          border-radius: 16px; 
+          overflow: hidden; 
+          box-shadow: 0 4px 6px rgba(0,0,0,0.03); 
+          background: #fff;
+        }
 
-        @media (max-width: 600px) {
-          .card-grid { grid-template-columns: 1fr; }
+        .t-row {
+          display: grid; 
+          grid-template-columns: 1fr 1fr 1fr 1fr; 
+          padding: 20px; 
+          border-bottom: 1px solid #f3f4f6;
+          align-items: center;
+        }
+        .t-row:last-child { border-bottom: none; }
+        
+        .label { font-size: 14px; color: #6b7280; font-weight: 600; }
+        .val { font-size: 16px; font-weight: 700; color: #111; text-align: right; }
+        .rsi { font-weight: 800; }
+        .signal { font-size: 17px; font-weight: 800; }
+
+        .highlight { background-color: #f9fafb; }
+
+        /* 실행 가이드 행 (2컬럼) */
+        .action-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr; /* 2등분 */
+          gap: 0;
+          padding: 0;
+        }
+        .action-col {
+          padding: 24px;
+          text-align: center;
+          border-right: 1px solid #f3f4f6;
+        }
+        .action-col:last-child { border-right: none; }
+        
+        .act-label { font-size: 14px; color: #6b7280; margin-bottom: 8px; font-weight: 600; }
+        .act-val { font-size: 20px; font-weight: 800; }
+
+        .footer-info { margin-top: 20px; font-size: 13px; color: #9ca3af; line-height: 1.6; }
+
+        /* 모바일 대응 */
+        @media (max-width: 480px) {
+          .total-wrap { padding: 12px; }
+          .t-row { 
+            grid-template-columns: 1fr 1fr; 
+            gap: 12px;
+            padding: 16px;
+          }
+          /* 모바일에서 라벨-값 줄바꿈 처리 */
+          .label { font-size: 13px; }
+          .val { font-size: 15px; }
+          
+          .action-col { padding: 20px 10px; }
+          .act-val { font-size: 18px; }
         }
       `}</style>
-    </div>
-  );
-}
-
-function StatusCard({ title, value, subValue, color = "#111", subColor = "#666", bold }) {
-  return (
-    <div style={{ background: "#fff", padding: "20px", borderRadius: "16px", border: "1px solid #e5e7eb", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
-      <div style={{ fontSize: "14px", color: "#6b7280", marginBottom: "8px" }}>{title}</div>
-      <div style={{ fontSize: "20px", fontWeight: bold ? "800" : "600", color: color }}>{value}</div>
-      {subValue && <div style={{ fontSize: "12px", color: subColor, marginTop: "4px", fontWeight: "600" }}>{subValue}</div>}
-    </div>
-  );
-}
-
-function StrategyRow({ step, cond, amt, qty, active }) {
-  return (
-    <div style={{ 
-      display: "grid", 
-      gridTemplateColumns: "1fr 1.5fr 1fr 1fr", 
-      padding: "16px 0", 
-      borderBottom: "1px solid #f3f4f6",
-      backgroundColor: active ? "#fffbeb" : "transparent",
-      color: active ? "#d97706" : "#1f2937",
-      alignItems: "center",
-      textAlign: "right"
-    }}>
-      <div style={{ textAlign: "left", fontWeight: active ? "800" : "500" }}>{step}</div>
-      <div style={{ textAlign: "center", fontSize: "14px" }}>{cond}</div>
-      <div style={{ fontSize: "14px", color: "#6b7280" }}>{amt}</div>
-      <div style={{ fontWeight: "700" }}>{qty}</div>
     </div>
   );
 }
