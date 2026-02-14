@@ -1,167 +1,212 @@
+// app/cash/page.js
 "use client";
 
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 import { saveUserSettings } from "@/lib/saveUserSettings";
 
-/* ===== 가격 훅 (API 호출) ===== */
-function useLivePrice(symbol) {
+/* ===== 실시간 가격 훅 (API 호출) ===== */
+function useLivePrice(code) {
   const [price, setPrice] = useState(0);
   
   useEffect(() => {
-    // 1. 심볼 매핑 (실제 KIS 종목코드로 변경 필요)
-    // NASDAQ2X -> 418660 (예시)
-    // BIGTECH2X -> 종목코드 입력
-    let code = symbol;
-    if (symbol === "NASDAQ2X") code = "418660"; 
-    
-    // 초기 로드 및 주기적 갱신
+    if (!code) return;
+
+    // 5초마다 가격 갱신
     const fetchPrice = async () => {
       try {
         const res = await fetch(`/api/price?symbol=${code}`);
         const data = await res.json();
-        if (data.price) setPrice(data.price);
+        if (data.price && typeof data.price === 'number') {
+          setPrice(data.price);
+        }
       } catch (e) {
-        console.error("Price fetch failed", e);
+        console.error(`Price fetch error for ${code}`, e);
       }
     };
-
-    fetchPrice();
-    const interval = setInterval(fetchPrice, 5000); // 5초마다 갱신
-    return () => clearInterval(interval);
-  }, [symbol]);
+    
+    fetchPrice(); // 초기 실행
+    const timer = setInterval(fetchPrice, 5000); // 5초 주기
+    return () => clearInterval(timer);
+  }, [code]);
 
   return { price };
 }
 
+/* ===== 숫자 포맷터 (원화 표시) ===== */
 const won = (n) => Number(Math.round(n ?? 0)).toLocaleString("ko-KR") + "원";
 
-export default function CashDashboardPage() {
+export default function CashPage() {
   const { yearlyBudget, setYearlyBudget, setStepQty } = useAppStore();
-  const [yearlyInput, setYearlyInput] = useState(yearlyBudget || 0);
+  const [inputBudget, setInputBudget] = useState(yearlyBudget || 0);
 
-  // 실시간 가격 (나스닥, 빅테크)
-  const { price: priceN } = useLivePrice("NASDAQ2X");
-  const { price: priceB } = useLivePrice("BIGTECH2X");
-
-  // 초기 예치금 로드
+  // 1. 초기 사용자 데이터 로드
   useEffect(() => {
     (async () => {
-      const { data } = await supa.auth.getSession();
-      if (data?.session) {
-        const res = await fetch("/api/user-settings/me", {
-          headers: { Authorization: `Bearer ${data.session.access_token}` }
-        });
-        const d = await res.json();
-        if (d?.data?.yearly_budget) {
-          setYearlyInput(d.data.yearly_budget);
-          setYearlyBudget(d.data.yearly_budget);
+      try {
+        const { data } = await supa.auth.getSession();
+        if (data?.session) {
+          const res = await fetch("/api/user-settings/me", {
+            headers: { Authorization: `Bearer ${data.session.access_token}` }
+          });
+          const d = await res.json();
+          if (d?.data?.yearly_budget) {
+            const yb = Number(d.data.yearly_budget);
+            setInputBudget(yb);
+            setYearlyBudget(yb);
+          }
         }
+      } catch (e) {
+        console.error("User settings load error", e);
       }
     })();
   }, [setYearlyBudget]);
 
-  /* ===== 계산 로직 ===== */
-  const mAvg = yearlyInput / 12;
+  // 2. 실시간 가격 로드 (나스닥: 418660, 빅테크: 465610)
+  const { price: priceN } = useLivePrice("418660");
+  const { price: priceB } = useLivePrice("465610");
+
+  /* ===== 3. 계산 로직 적용 ===== */
+  
+  // A. 연간 배분 (나스닥 60%, 빅테크 40%)
+  const yearlyNasdaq = inputBudget * 0.6;
+  const yearlyBigTech = inputBudget * 0.4;
+
+  // B. 월별 기준액 (연간 / 12)
+  const monthNasdaq = yearlyNasdaq / 12;
+  const monthBigTech = yearlyBigTech / 12;
+
+  // C. 단계별 매입 금액 (월별 매입금 * 비율 * 0.92)
   const factor = 0.92;
 
-  // 금액 계산
-  const n1_amt = mAvg * 0.14 * factor;
-  const n2_amt = mAvg * 0.26 * factor;
-  const n3_amt = mAvg * 0.60 * factor;
-  
-  const b1_amt = mAvg * 0.14 * factor;
-  const b2_amt = mAvg * 0.14 * factor;
-  const b3_amt = mAvg * 0.26 * factor;
+  // [나스닥] 14% / 26% / 60%
+  const n1_amt = monthNasdaq * 0.14 * factor;
+  const n2_amt = monthNasdaq * 0.26 * factor;
+  const n3_amt = monthNasdaq * 0.60 * factor;
 
-  // 수량 계산
-  const n1_qty = priceN ? Math.floor(n1_amt / priceN) : 0;
-  const n2_qty = priceN ? Math.floor(n2_amt / priceN) : 0;
-  const n3_qty = priceN ? Math.floor(n3_amt / priceN) : 0;
+  // [빅테크] 14% / 26% / 60% (나스닥과 동일 비율 적용)
+  const b1_amt = monthBigTech * 0.14 * factor;
+  const b2_amt = monthBigTech * 0.26 * factor;
+  const b3_amt = monthBigTech * 0.60 * factor;
 
-  const b1_qty = priceB ? Math.floor(b1_amt / priceB) : 0;
-  const b2_qty = priceB ? Math.floor(b2_amt / priceB) : 0;
-  const b3_qty = priceB ? Math.floor(b3_amt / priceB) : 0;
+  // D. 수량 계산 (금액 / 실시간가)
+  const n1_qty = priceN > 0 ? Math.floor(n1_amt / priceN) : 0;
+  const n2_qty = priceN > 0 ? Math.floor(n2_amt / priceN) : 0;
+  const n3_qty = priceN > 0 ? Math.floor(n3_amt / priceN) : 0;
+
+  const b1_qty = priceB > 0 ? Math.floor(b1_amt / priceB) : 0;
+  const b2_qty = priceB > 0 ? Math.floor(b2_amt / priceB) : 0;
+  const b3_qty = priceB > 0 ? Math.floor(b3_amt / priceB) : 0;
 
   const handleSave = async () => {
-    setYearlyBudget(yearlyInput);
+    setYearlyBudget(inputBudget);
     setStepQty({
-        nasdaq2x: { s1: n1_qty, s2: n2_qty, s3: n3_qty },
-        bigtech2x: { s1: b1_qty, s2: b2_qty, s3: b3_qty }
+      nasdaq2x: { s1: n1_qty, s2: n2_qty, s3: n3_qty },
+      bigtech2x: { s1: b1_qty, s2: b2_qty, s3: b3_qty }
     });
-    await saveUserSettings({ yearly_budget: yearlyInput });
+    await saveUserSettings({ yearly_budget: inputBudget });
     alert("저장되었습니다.");
   };
 
   return (
-    <div className="container">
-      <h1 className="title">예치금 및 매수 설정</h1>
-      
-      <div className="input-section">
-        <label>1년 총 납입금</label>
-        <div className="input-group">
+    <div className="cash-container">
+      <h1 className="title">예치금 및 매수설정</h1>
+
+      {/* 입력 섹션 */}
+      <div className="input-card">
+        <label>1년 총 납입금 (예상 연봉/저축액)</label>
+        <div className="input-row">
           <input 
             type="number" 
-            value={yearlyInput} 
-            onChange={(e) => setYearlyInput(Number(e.target.value))} 
+            value={inputBudget} 
+            onChange={(e) => setInputBudget(Number(e.target.value))} 
+            placeholder="금액 입력"
           />
           <button onClick={handleSave}>저장</button>
         </div>
-        <div className="sub-info">월 평균 매입금: {won(mAvg)}</div>
+        
+        {/* 월 평균 배분 정보 표시 */}
+        <div className="info-row">
+          <div>
+            <span className="label">나스닥(60%) 월평균:</span> 
+            <span className="val">{won(monthNasdaq)}</span>
+          </div>
+          <div>
+            <span className="label">빅테크(40%) 월평균:</span> 
+            <span className="val">{won(monthBigTech)}</span>
+          </div>
+        </div>
       </div>
 
+      {/* 테이블 섹션 */}
       <div className="table-card">
-        <div className="row header">
-          <div className="col">구분</div>
-          <div className="col">나스닥 2배 ({won(priceN)})</div>
-          <div className="col">빅테크 2배 ({won(priceB)})</div>
+        <div className="header-row">
+          <div className="th">구분</div>
+          <div className="th">
+            나스닥 2배 <br/>
+            <span className="code">418660</span> <br/>
+            <span className="price-tag">
+              {priceN > 0 ? won(priceN) : "(로딩중...)"}
+            </span>
+          </div>
+          <div className="th">
+            빅테크 2배 <br/>
+            <span className="code">465610</span> <br/>
+            <span className="price-tag">
+              {priceB > 0 ? won(priceB) : "(로딩중...)"}
+            </span>
+          </div>
         </div>
 
-        {/* 1단계 */}
-        <div className="row">
-          <div className="col label">1단계 수량 (rsi 43)</div>
-          <div className="col val">{n1_qty}주 <span className="amt">({won(n1_amt)})</span></div>
-          <div className="col val">{b1_qty}주 <span className="amt">({won(b1_amt)})</span></div>
-        </div>
-
-        {/* 2단계 */}
-        <div className="row">
-          <div className="col label">2단계 수량 (rsi 36)</div>
-          <div className="col val">{n2_qty}주 <span className="amt">({won(n2_amt)})</span></div>
-          <div className="col val">{b2_qty}주 <span className="amt">({won(b2_amt)})</span></div>
-        </div>
-
-        {/* 3단계 */}
-        <div className="row">
-          <div className="col label">3단계 수량 (rsi 30)</div>
-          <div className="col val">{n3_qty}주 <span className="amt">({won(n3_amt)})</span></div>
-          <div className="col val">{b3_qty}주 <span className="amt">({won(b3_amt)})</span></div>
-        </div>
+        <Row label="1단계 (14% x 0.92)" q1={n1_qty} q2={b1_qty} a1={n1_amt} a2={b1_amt} />
+        <Row label="2단계 (26% x 0.92)" q1={n2_qty} q2={b2_qty} a1={n2_amt} a2={b2_amt} />
+        <Row label="3단계 (60% x 0.92)" q1={n3_qty} q2={b3_qty} a1={n3_amt} a2={b3_amt} />
       </div>
 
       <style jsx>{`
-        .container { max-width: 800px; margin: 0 auto; padding: 20px; }
-        .title { font-size: 24px; font-weight: 800; margin-bottom: 20px; }
+        .cash-container { max-width: 800px; margin: 0 auto; padding: 20px; font-family: -apple-system, sans-serif; }
+        .title { font-size: 24px; font-weight: 800; margin-bottom: 20px; color: #111; }
         
-        .input-section { background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #eee; }
-        .input-group { display: flex; gap: 10px; margin-top: 8px; }
-        input { flex: 1; padding: 12px; font-size: 18px; border: 1px solid #ddd; border-radius: 8px; }
-        button { padding: 0 20px; background: #2563eb; color: white; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
-        .sub-info { margin-top: 8px; color: #2563eb; font-size: 14px; font-weight: 600; }
+        .input-card { background: #fff; padding: 24px; border-radius: 16px; border: 1px solid #e5e7eb; margin-bottom: 24px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .input-row { display: flex; gap: 8px; margin-top: 12px; margin-bottom: 16px; }
+        input { flex: 1; padding: 14px; font-size: 18px; border: 1px solid #d1d5db; border-radius: 8px; font-weight: 700; color: #111; }
+        button { padding: 0 24px; background: #2563eb; color: #fff; font-weight: 700; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; }
+        
+        .info-row { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: #4b5563; background: #f9fafb; padding: 12px; border-radius: 8px; }
+        .info-row div { display: flex; justify-content: space-between; }
+        .info-row .label { font-weight: 500; }
+        .info-row .val { font-weight: 700; color: #2563eb; }
 
-        .table-card { background: #fff; border-radius: 12px; border: 1px solid #eee; overflow: hidden; }
-        .row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; border-bottom: 1px solid #f0f0f0; padding: 16px; align-items: center; }
-        .header { background: #f9fafb; font-weight: 800; color: #4b5563; font-size: 14px; }
-        .label { font-weight: 600; color: #374151; font-size: 15px; }
-        .val { text-align: right; font-weight: 800; font-size: 16px; color: #111; }
-        .amt { font-size: 12px; color: #9ca3af; font-weight: 400; display: block; }
+        .table-card { background: #fff; border-radius: 16px; border: 1px solid #e5e7eb; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .header-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; background: #f9fafb; padding: 16px; border-bottom: 1px solid #e5e7eb; align-items: center; }
+        .th { font-weight: 700; font-size: 14px; color: #4b5563; text-align: right; line-height: 1.4; }
+        .th:first-child { text-align: left; }
+        
+        .code { font-size: 11px; color: #9ca3af; font-weight: 400; }
+        .price-tag { font-size: 13px; color: #2563eb; font-weight: 700; }
         
         @media (max-width: 480px) {
-           .row { font-size: 13px; padding: 12px 8px; }
-           .val { font-size: 14px; }
+          .cash-container { padding: 12px; }
+          .th { font-size: 12px; }
         }
       `}</style>
+    </div>
+  );
+}
+
+function Row({ label, q1, q2, a1, a2 }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", padding: "16px", borderBottom: "1px solid #f3f4f6", alignItems: "center" }}>
+      <div style={{ fontWeight: "600", fontSize: "13px", color: "#374151" }}>{label}</div>
+      <div style={{ textAlign: "right" }}>
+        <div style={{ fontSize: "16px", fontWeight: "800", color: "#111" }}>{q1}주</div>
+        <div style={{ fontSize: "11px", color: "#9ca3af" }}>({won(a1)})</div>
+      </div>
+      <div style={{ textAlign: "right" }}>
+        <div style={{ fontSize: "16px", fontWeight: "800", color: "#111" }}>{q2}주</div>
+        <div style={{ fontSize: "11px", color: "#9ca3af" }}>({won(a2)})</div>
+      </div>
     </div>
   );
 }
