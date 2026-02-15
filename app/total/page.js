@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 
-/* ===== [로직 1] 지표 계산 함수 (기존과 동일) ===== */
+/* ===== [로직 1] 지표 계산 함수 ===== */
 function calcRSI_Cutler(values, period = 14) {
   const n = values.length;
   if (!Array.isArray(values) || n < period + 1) return null;
@@ -52,89 +52,72 @@ function calcSMA(values, period = 200) {
 
 const won = (n) => (n > 0 ? Number(Math.round(n)).toLocaleString("ko-KR") + "원" : "-");
 
-/* ===== [로직 2] 데이터 훅 (스토어 캐시 적용) ===== */
-function useStockData(code, initialDelay = 0) {
-  // 1. 스토어에서 캐시된 데이터와 업데이트 함수 가져오기
+/* ===== [로직 2] 데이터 훅 (속도 최적화) ===== */
+function useStockData(code) {
   const { marketData, setMarketData } = useAppStore();
   const cached = marketData[code];
-
-  // 2. 초기 상태를 캐시 데이터로 설정 (로딩 없이 즉시 표시)
   const [data, setData] = useState(cached || { price: 0, rsi: null, ma200: null, ready: false });
 
-  // 3. 스토어의 캐시가 변경되면(다른 탭 등에서 업데이트 시) 로컬 상태도 동기화
   useEffect(() => {
-    if (cached) {
-      setData(cached);
-    }
+    if (cached) setData(cached);
   }, [cached]);
 
   useEffect(() => {
     let isMounted = true;
-    let timeoutId = null;
-
-    const fetchData = async (retryCount = 0) => {
+    
+    const fetchData = async () => {
       try {
         const d = new Date();
         const p = (n) => String(n).padStart(2, "0");
         const todayStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
         
+        // 400일 전으로 설정 (200일선 계산용)
         const startDt = new Date(d);
         startDt.setDate(startDt.getDate() - 400);
         const startStr = `${startDt.getFullYear()}${p(startDt.getMonth() + 1)}${p(startDt.getDate())}`;
 
-        // 일봉
-        const resDaily = await fetch(`/api/kis/daily?code=${code}&start=${startStr}&end=${todayStr}`);
-        const jsonDaily = await resDaily.json();
-        const items = jsonDaily.output || jsonDaily.output1 || jsonDaily.output2 || [];
-        
-        if ((!items || items.length === 0) && retryCount < 3) {
-           if (isMounted) timeoutId = setTimeout(() => fetchData(retryCount + 1), 1500);
-           return;
-        }
+        // 병렬 요청으로 빨라진 API 호출
+        const [resDaily, resNow] = await Promise.all([
+          fetch(`/api/kis/daily?code=${code}&start=${startStr}&end=${todayStr}`),
+          fetch(`/api/kis/now?code=${code}`)
+        ]);
 
-        let candles = items.map((item) => ({
-          date: item.stck_bsop_date || item.bstp_nmis || item.date,
-          close: Number(item.stck_clpr || item.tdd_clsprc || item.close)
-        })).filter((c) => c.close > 0 && c.date).sort((a, b) => a.date.localeCompare(b.date));
+        const jsonDaily = await resDaily.json();
+        const jsonNow = await resNow.json();
 
         if (!isMounted) return;
+
+        // 데이터 안전 처리
+        const items = Array.isArray(jsonDaily.output) ? jsonDaily.output : 
+                     (jsonDaily.output2 || []);
+        
+        // 데이터 정제
+        let candles = items.map((item) => ({
+          date: item.stck_bsop_date || item.date,
+          close: Number(item.stck_clpr || item.close)
+        })).filter((c) => c.close > 0 && c.date).sort((a, b) => a.date.localeCompare(b.date));
 
         const closes = candles.map((c) => c.close);
         const rsi = calcRSI_Cutler(closes, 14);
         const ma200 = calcSMA(closes, 200);
 
         // 현재가
-        const resNow = await fetch(`/api/kis/now?code=${code}`);
-        const jsonNow = await resNow.json();
         const nowPrice = Number(jsonNow.output?.stck_prpr || 0);
-
         const finalPrice = nowPrice > 0 ? nowPrice : (closes.length > 0 ? closes[closes.length - 1] : 0);
 
-        // [핵심] 데이터를 스토어에 저장 (화면 갱신 + 캐시 저장)
         const newData = { price: finalPrice, rsi, ma200, ready: true };
         setMarketData(code, newData);
 
       } catch (e) {
         console.error(`Error fetching ${code}`, e);
-        if (retryCount < 3 && isMounted) {
-            timeoutId = setTimeout(() => fetchData(retryCount + 1), 1500);
-        }
       }
     };
 
-    // 딜레이 후 실행 (첫 로딩 시 API 호출 분산)
-    timeoutId = setTimeout(() => {
-        fetchData();
-    }, initialDelay);
+    fetchData(); // 딜레이 없이 바로 실행
+    const interval = setInterval(fetchData, 30000); 
 
-    const interval = setInterval(() => fetchData(), 30000); 
-
-    return () => { 
-        isMounted = false; 
-        clearInterval(interval); 
-        clearTimeout(timeoutId);
-    };
-  }, [code, initialDelay, setMarketData]); // setMarketData 의존성 추가
+    return () => { isMounted = false; clearInterval(interval); };
+  }, [code, setMarketData]);
 
   return data;
 }
@@ -142,9 +125,9 @@ function useStockData(code, initialDelay = 0) {
 export default function TotalPage() {
   const { yearlyBudget, setYearlyBudget } = useAppStore();
   
-  // 훅 사용 (캐시 덕분에 즉시 렌더링됨)
-  const nasdaq = useStockData("418660", 0); 
-  const bigtech = useStockData("465610", 600); 
+  // 딜레이 없이 동시에 로딩
+  const nasdaq = useStockData("418660"); 
+  const bigtech = useStockData("465610"); 
 
   useEffect(() => {
     (async () => {
@@ -159,18 +142,17 @@ export default function TotalPage() {
             setYearlyBudget(Number(d.data.yearly_budget));
           }
         }
-      } catch (e) { console.error(e); }
+      } catch (e) {}
     })();
   }, [setYearlyBudget]);
 
-  /* ===== 이하 로직 동일 ===== */
   const rsiN = nasdaq.rsi;
   const priceN = nasdaq.price;
   const ma200N = nasdaq.ma200;
 
   let signalType = "HOLD"; 
   let stage = 0; 
-  let signalText = nasdaq.ready ? "관망" : "로딩중..."; // ready가 true면 캐시 데이터임
+  let signalText = nasdaq.ready ? "관망" : "로딩중..."; 
   let signalColor = nasdaq.ready ? "#10b981" : "#9ca3af"; 
 
   if (nasdaq.ready) {
