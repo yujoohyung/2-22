@@ -113,17 +113,22 @@ export async function GET(req) {
     }
 
     // 6. 지표 계산
-    // MA200
+    
+    // [수정 포인트 1] MA200: 데이터가 200개 이상일 때만 계산
     const recent200 = items.slice(0, 200);
     let ma200 = 0;
-    if (recent200.length > 0) {
+    
+    if (recent200.length >= 200) { 
       let sum = 0;
       for (const day of recent200) sum += Number(day.stck_clpr);
-      ma200 = sum / recent200.length;
+      ma200 = sum / 200; // 정확히 200으로 나눔
+    } else {
+      ma200 = 0; // 데이터 부족 시 0 처리 (화면 표시 방지)
     }
 
-    // RSI
-    const rsiSource = items.slice(0, 100).map(i => Number(i.stck_clpr));
+    // [수정 포인트 2] RSI: 100개만 자르지 않고 전체 데이터 사용
+    // slice(0, 100) 제거함 -> 받아온 2년치(약 500개) 데이터를 모두 사용하여 RSI 정확도 대폭 향상
+    const rsiSource = items.map(i => Number(i.stck_clpr));
     const rsi = calculateRSI(rsiSource, 14);
 
     // 최종 반환
