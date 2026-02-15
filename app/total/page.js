@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 
-/* ===== [로직 1] 지표 계산 함수 (Dashboard/Stock2와 동일) ===== */
+/* ===== [로직 1] 지표 계산 함수 (기존과 동일) ===== */
 function calcRSI_Cutler(values, period = 14) {
   const n = values.length;
   if (!Array.isArray(values) || n < period + 1) return null;
@@ -25,7 +25,6 @@ function calcRSI_Cutler(values, period = 14) {
   }
 
   let rsiArray = new Array(n).fill(null);
-  
   let avgG = sumG / period;
   let avgL = sumL / period;
   rsiArray[period] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - (100 / (1 + (avgG / avgL)));
@@ -41,7 +40,6 @@ function calcRSI_Cutler(values, period = 14) {
   return rsiArray[n - 1];
 }
 
-/* 200일 이동평균선 */
 function calcSMA(values, period = 200) {
   const n = values.length;
   if (n < period) return null;
@@ -52,13 +50,23 @@ function calcSMA(values, period = 200) {
   return sum / period;
 }
 
-/* 포맷터 */
 const won = (n) => (n > 0 ? Number(Math.round(n)).toLocaleString("ko-KR") + "원" : "-");
 
-/* ===== [로직 2] 데이터 훅 (딜레이 & 재시도 기능 추가) ===== */
-// initialDelay: API 동시 호출 방지를 위한 지연 시간 (ms)
+/* ===== [로직 2] 데이터 훅 (스토어 캐시 적용) ===== */
 function useStockData(code, initialDelay = 0) {
-  const [data, setData] = useState({ price: 0, rsi: null, ma200: null, ready: false });
+  // 1. 스토어에서 캐시된 데이터와 업데이트 함수 가져오기
+  const { marketData, setMarketData } = useAppStore();
+  const cached = marketData[code];
+
+  // 2. 초기 상태를 캐시 데이터로 설정 (로딩 없이 즉시 표시)
+  const [data, setData] = useState(cached || { price: 0, rsi: null, ma200: null, ready: false });
+
+  // 3. 스토어의 캐시가 변경되면(다른 탭 등에서 업데이트 시) 로컬 상태도 동기화
+  useEffect(() => {
+    if (cached) {
+      setData(cached);
+    }
+  }, [cached]);
 
   useEffect(() => {
     let isMounted = true;
@@ -66,7 +74,6 @@ function useStockData(code, initialDelay = 0) {
 
     const fetchData = async (retryCount = 0) => {
       try {
-        // 날짜 계산
         const d = new Date();
         const p = (n) => String(n).padStart(2, "0");
         const todayStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
@@ -75,21 +82,16 @@ function useStockData(code, initialDelay = 0) {
         startDt.setDate(startDt.getDate() - 400);
         const startStr = `${startDt.getFullYear()}${p(startDt.getMonth() + 1)}${p(startDt.getDate())}`;
 
-        // 1. 일봉 데이터 (API)
+        // 일봉
         const resDaily = await fetch(`/api/kis/daily?code=${code}&start=${startStr}&end=${todayStr}`);
         const jsonDaily = await resDaily.json();
         const items = jsonDaily.output || jsonDaily.output1 || jsonDaily.output2 || [];
         
-        // [재시도 로직] 데이터가 없으면 잠시 후 다시 시도 (최대 3회)
         if ((!items || items.length === 0) && retryCount < 3) {
-           if (isMounted) {
-             console.log(`[${code}] 데이터 없음, 재시도 ${retryCount + 1}...`);
-             timeoutId = setTimeout(() => fetchData(retryCount + 1), 1500);
-           }
+           if (isMounted) timeoutId = setTimeout(() => fetchData(retryCount + 1), 1500);
            return;
         }
 
-        // 필드명 매핑 (안전장치)
         let candles = items.map((item) => ({
           date: item.stck_bsop_date || item.bstp_nmis || item.date,
           close: Number(item.stck_clpr || item.tdd_clsprc || item.close)
@@ -97,36 +99,34 @@ function useStockData(code, initialDelay = 0) {
 
         if (!isMounted) return;
 
-        // 2. 지표 계산
         const closes = candles.map((c) => c.close);
         const rsi = calcRSI_Cutler(closes, 14);
         const ma200 = calcSMA(closes, 200);
 
-        // 3. 실시간 현재가
+        // 현재가
         const resNow = await fetch(`/api/kis/now?code=${code}`);
         const jsonNow = await resNow.json();
         const nowPrice = Number(jsonNow.output?.stck_prpr || 0);
 
-        // 최종 가격 결정
         const finalPrice = nowPrice > 0 ? nowPrice : (closes.length > 0 ? closes[closes.length - 1] : 0);
 
-        setData({ price: finalPrice, rsi, ma200, ready: true });
+        // [핵심] 데이터를 스토어에 저장 (화면 갱신 + 캐시 저장)
+        const newData = { price: finalPrice, rsi, ma200, ready: true };
+        setMarketData(code, newData);
 
       } catch (e) {
         console.error(`Error fetching ${code}`, e);
-        // 에러 발생 시에도 재시도
         if (retryCount < 3 && isMounted) {
             timeoutId = setTimeout(() => fetchData(retryCount + 1), 1500);
         }
       }
     };
 
-    // [중요] 동시 호출 충돌 방지를 위해 initialDelay 만큼 기다렸다 시작
+    // 딜레이 후 실행 (첫 로딩 시 API 호출 분산)
     timeoutId = setTimeout(() => {
         fetchData();
     }, initialDelay);
 
-    // 30초마다 갱신
     const interval = setInterval(() => fetchData(), 30000); 
 
     return () => { 
@@ -134,7 +134,7 @@ function useStockData(code, initialDelay = 0) {
         clearInterval(interval); 
         clearTimeout(timeoutId);
     };
-  }, [code, initialDelay]);
+  }, [code, initialDelay, setMarketData]); // setMarketData 의존성 추가
 
   return data;
 }
@@ -142,11 +142,10 @@ function useStockData(code, initialDelay = 0) {
 export default function TotalPage() {
   const { yearlyBudget, setYearlyBudget } = useAppStore();
   
-  // [수정] 딜레이 적용: 나스닥은 0초(바로), 빅테크는 0.6초 뒤 실행
+  // 훅 사용 (캐시 덕분에 즉시 렌더링됨)
   const nasdaq = useStockData("418660", 0); 
   const bigtech = useStockData("465610", 600); 
 
-  // 예치금 설정 로드
   useEffect(() => {
     (async () => {
       try {
@@ -164,25 +163,22 @@ export default function TotalPage() {
     })();
   }, [setYearlyBudget]);
 
-  /* ===== [로직 3] 매매 판단 (나스닥 기준) ===== */
+  /* ===== 이하 로직 동일 ===== */
   const rsiN = nasdaq.rsi;
   const priceN = nasdaq.price;
   const ma200N = nasdaq.ma200;
 
   let signalType = "HOLD"; 
   let stage = 0; 
-  let signalText = nasdaq.ready ? "관망" : "데이터 로딩중...";
+  let signalText = nasdaq.ready ? "관망" : "로딩중..."; // ready가 true면 캐시 데이터임
   let signalColor = nasdaq.ready ? "#10b981" : "#9ca3af"; 
 
   if (nasdaq.ready) {
-    // 1. 매도: 200일선 이탈
     if (priceN > 0 && ma200N > 0 && priceN < ma200N) {
       signalType = "SELL";
       signalText = "매도 (30% 비중)";
       signalColor = "#ef4444"; 
-    }
-    // 2. 매수: RSI 기준
-    else if (rsiN !== null) {
+    } else if (rsiN !== null) {
       if (rsiN < 30) {
         signalType = "BUY"; stage = 3;
         signalText = "3단계 매수";
@@ -203,10 +199,8 @@ export default function TotalPage() {
     }
   }
 
-  /* ===== [로직 4] 수량 계산 ===== */
   const monthAvg = yearlyBudget / 12;
   const factor = 0.92;
-
   let stageRatio = 0;
   if (stage === 1) stageRatio = 0.14;
   else if (stage === 2) stageRatio = 0.26;
@@ -219,7 +213,6 @@ export default function TotalPage() {
   const priceB = bigtech.price;
   const qtyB = (signalType === "BUY" && priceB > 0) ? Math.floor(amtBigtech / priceB) : 0;
 
-  /* ===== [로직 5] 최종 표시 텍스트 ===== */
   let displayN = "-";
   let displayB = "-";
 
@@ -245,7 +238,7 @@ export default function TotalPage() {
         <div className="t-row">
           <div className="cell label">나스닥 RSI</div>
           <div className="cell val rsi" style={{ color: rsiN && rsiN < 43 ? "#dc2626" : "#111" }}>
-            {nasdaq.ready ? (rsiN ? rsiN.toFixed(2) : "-") : "로딩중..."}
+            {nasdaq.ready ? (rsiN ? rsiN.toFixed(2) : "-") : "..."}
           </div>
           <div className="cell label">현재가</div>
           <div className="cell val">
@@ -257,7 +250,7 @@ export default function TotalPage() {
         <div className="t-row">
           <div className="cell label">빅테크 RSI</div>
           <div className="cell val rsi">
-            {bigtech.ready ? (bigtech.rsi ? bigtech.rsi.toFixed(2) : "-") : "로딩중..."}
+            {bigtech.ready ? (bigtech.rsi ? bigtech.rsi.toFixed(2) : "-") : "..."}
           </div>
           <div className="cell label">현재가</div>
           <div className="cell val">
