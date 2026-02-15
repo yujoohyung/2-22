@@ -7,7 +7,7 @@ import { useAppStore } from "../store";
 const CODE = "418660";
 
 /** 이 페이지 고유 키 */
-const SYMBOL = "dashboard";
+const SYMBOL = "dashboard"; // dashboard가 나스닥 페이지 키로 사용됨
 /** 합산 계산용: 반대편(빅테크) 심볼 */
 const OTHER_SYMBOL = "stock2";
 
@@ -54,6 +54,21 @@ function calcRSI_Cutler(values, period = 14) {
   return out;
 }
 
+/** SMA (200일선용) */
+function calcSMA(values, window) {
+  const n = values.length;
+  const out = Array(n).fill(null);
+  if (!Array.isArray(values) || window <= 0 || n < window) return out;
+  let sum = 0;
+  for (let i = 0; i < window; i++) sum += values[i];
+  out[window - 1] = sum / window;
+  for (let i = window; i < n; i++) {
+    sum += values[i] - values[i - window];
+    out[i] = sum / window;
+  }
+  return out;
+}
+
 /** 다른 페이지(now 가격) 읽기용 훅 */
 function useOtherNow(otherKey) {
   const [otherNow, setOtherNow] = useState(() => {
@@ -96,7 +111,7 @@ export default function DashboardPage() {
   const topTableScrollRef = useRef(null);
   const [scrolledToBottomOnce, setScrolledToBottomOnce] = useState(false);
 
-  /** 일자별 시세 로드 (200일선 제거, 150일치만 로드) */
+  /** 일자별 시세 로드 (중복 제거 포함) */
   useEffect(() => {
     (async () => {
       try {
@@ -104,7 +119,7 @@ export default function DashboardPage() {
         const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
         const today = new Date();
         const end = ymd(today);
-        const s = new Date(today); s.setDate(s.getDate() - 150); // 150일만 요청 (속도 향상)
+        const s = new Date(today); s.setDate(s.getDate() - 400); // 400일 전부터 (200일선/RSI 확보)
         const start = ymd(s);
 
         const res = await fetch(`/api/kis/daily?code=${CODE}&start=${start}&end=${end}`);
@@ -115,7 +130,7 @@ export default function DashboardPage() {
         const out = d.output || d.output1 || [];
         const rawArr = Array.isArray(out) ? out : [];
 
-        // [중복 제거]
+        // [중복 제거] 날짜 기준
         const uniqueMap = new Map();
         rawArr.forEach((item) => {
           const key = item.stck_bsop_date || item.bstp_nmis || item.date;
@@ -135,14 +150,14 @@ export default function DashboardPage() {
 
         const series = rows.map((r) => r.close);
         const rsi = calcRSI_Cutler(series, 14);
-        
-        // 200일선 계산 제거됨
+        const ma200 = calcSMA(series, 200);
 
+        const soldYear = new Set();
         const resRows = rows.map((r, i) => {
           const base = i > 0 ? rows[i - 1].close : (r.prev ?? r.close);
           const dp = base ? ((r.close - base) / base) * 100 : null;
 
-          // 매수 단계 (RSI 기준)
+          // 매수 단계 (RSI 기준: 43/36/30)
           let sig = "";
           const rv = rsi[i];
           if (rv != null) {
@@ -151,9 +166,13 @@ export default function DashboardPage() {
             else if (rv <= 43) sig = "1단계";
           }
 
-          // 200일선 매도 로직 제거됨
+          // 연 1회 매도: 200일선 하회 시
+          const year = r.date?.slice(0, 4);
+          const below200 = ma200[i] != null && r.close < ma200[i];
+          const sellNow = !!(below200 && year && !soldYear.has(year));
+          if (sellNow) soldYear.add(year);
 
-          return { signal: sig, date: r.date, price: r.close, dailyPct: dp, rsi: rsi[i] };
+          return { signal: sig, date: r.date, price: r.close, dailyPct: dp, rsi: rsi[i], sell: sellNow, ma200: ma200[i] };
         });
 
         setApiRows(resRows);
@@ -435,21 +454,26 @@ export default function DashboardPage() {
                   const s2 = stepQty.nasdaq2x?.s2 ?? 0;
                   const s3 = stepQty.nasdaq2x?.s3 ?? 0;
 
-                  const sig = r.signal === "1단계" ? (s1 > 0 ? `1단계 / ${s1}주` : "1단계") :
-                              r.signal === "2단계" ? (s2 > 0 ? `2단계 / ${s2}주` : "2단계") :
-                              r.signal === "3단계" ? (s3 > 0 ? `3단계 / ${s3}주` : "3단계") : "";
+                  const totalBuyQty = (trades[SYMBOL] || []).reduce((s, t) => s + (Number(t.qty) || 0), 0);
+                  const sellQty = totalBuyQty > 0 ? Math.max(1, Math.floor(totalBuyQty * 0.3)) : 0;
+
+                  const sig =
+                    r.sell
+                      ? (sellQty > 0 ? `매도 / ${fmt(sellQty)}주` : "매도")
+                      : r.signal === "1단계" ? (s1 > 0 ? `1단계 / ${s1}주` : "1단계") :
+                        r.signal === "2단계" ? (s2 > 0 ? `2단계 / ${s2}주` : "2단계") :
+                        r.signal === "3단계" ? (s3 > 0 ? `3단계 / ${s3}주` : "3단계") : "";
 
                   const isLast = i === rows.length - 1;
                   const live = isLast && nowQuote?.price > 0;
                   const price = live ? nowQuote.price : r.price;
-
                   const prevClose = i > 0 ? rows[i - 1].price : r.price;
                   const dailyPctLive = prevClose ? ((price - prevClose) / prevClose) * 100 : null;
                   const dailyPctValue = live ? dailyPctLive : r.dailyPct;
 
                   return (
                     <tr key={i} style={{ borderTop: "1px solid #f0f0f0" }}>
-                      <td style={{...td, color: "red", fontWeight: "bold"}}>{sig}</td>
+                      <td style={td}>{sig}</td>
                       <td style={td}>{r.date}</td>
                       <td style={tdRight}>
                         {fmt(price)}원
