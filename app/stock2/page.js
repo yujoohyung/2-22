@@ -131,7 +131,18 @@ export default function Stock2Page() {
         if (!d.ok) throw new Error("daily api error");
 
         const out = d.output || d.output1 || [];
-        const arr = Array.isArray(out) ? out : [];
+        const rawArr = Array.isArray(out) ? out : [];
+
+        // [수정] 클라이언트 측 중복 제거 로직 추가
+        const uniqueMap = new Map();
+        rawArr.forEach((item) => {
+          const key = item.stck_bsop_date || item.bstp_nmis || item.date;
+          if (key && !uniqueMap.has(key)) {
+            uniqueMap.set(key, item);
+          }
+        });
+        const arr = Array.from(uniqueMap.values());
+
         const rows = arr.map((x) => ({
           date: x.stck_bsop_date || x.bstp_nmis || x.date,
           close: Number(x.stck_clpr || x.tdd_clsprc || x.close),
