@@ -6,30 +6,46 @@ import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 import { saveUserSettings } from "@/lib/saveUserSettings";
 
-/* ===== 실시간 가격 훅 (API 호출) ===== */
+/* ===== 실시간 가격 훅 (스토어 캐시 우선 사용) ===== */
 function useLivePrice(code) {
-  const [price, setPrice] = useState(0);
+  // 1. 스토어에서 캐시된 데이터 가져오기
+  const { marketData, setMarketData } = useAppStore();
+  const cachedPrice = marketData[code]?.price || 0;
   
+  // 2. 초기값을 캐시된 가격으로 설정 (0초 로딩)
+  const [price, setPrice] = useState(cachedPrice);
+
+  // 3. 스토어 데이터가 외부(다른 탭/페이지)에서 업데이트되면 반영
+  useEffect(() => {
+    if (marketData[code]?.price) {
+      setPrice(marketData[code].price);
+    }
+  }, [marketData, code]);
+
   useEffect(() => {
     if (!code) return;
 
-    // 5초마다 가격 갱신
     const fetchPrice = async () => {
       try {
         const res = await fetch(`/api/price?symbol=${code}`);
         const data = await res.json();
         if (data.price && typeof data.price === 'number') {
           setPrice(data.price);
+          // 4. 가져온 최신 가격을 스토어에도 업데이트 (다른 페이지 공유)
+          setMarketData(code, { ...marketData[code], price: data.price });
         }
       } catch (e) {
         console.error(`Price fetch error for ${code}`, e);
       }
     };
     
-    fetchPrice(); // 초기 실행
-    const timer = setInterval(fetchPrice, 5000); // 5초 주기
+    // 캐시가 없으면 즉시 실행, 있으면 백그라운드 갱신
+    if (cachedPrice === 0) fetchPrice();
+    else fetchPrice(); // 최신화 보장 위해 실행은 하되 화면은 이미 떠있음
+
+    const timer = setInterval(fetchPrice, 5000); 
     return () => clearInterval(timer);
-  }, [code]);
+  }, [code, setMarketData]); // marketData는 의존성에서 제외하여 루프 방지
 
   return { price };
 }
@@ -39,9 +55,11 @@ const won = (n) => Number(Math.round(n ?? 0)).toLocaleString("ko-KR") + "원";
 
 export default function CashPage() {
   const { yearlyBudget, setYearlyBudget, setStepQty } = useAppStore();
-  const [inputBudget, setInputBudget] = useState(yearlyBudget || 0);
+  
+  // 1. 스토어에 저장된 예치금을 초기값으로 바로 사용 (로딩 없음)
+  const [inputBudget, setInputBudget] = useState(yearlyBudget);
 
-  // 1. 초기 사용자 데이터 로드
+  // 2. 서버 데이터 동기화 (뒷단 실행)
   useEffect(() => {
     (async () => {
       try {
@@ -52,9 +70,11 @@ export default function CashPage() {
           });
           const d = await res.json();
           if (d?.data?.yearly_budget) {
-            const yb = Number(d.data.yearly_budget);
-            setInputBudget(yb);
-            setYearlyBudget(yb);
+            const serverValue = Number(d.data.yearly_budget);
+            // 스토어 업데이트
+            setYearlyBudget(serverValue);
+            // 입력창도 최신값으로 동기화 (사용자가 입력 중이 아닐 때만 하는 게 좋지만, 단순화를 위해 반영)
+            setInputBudget(serverValue);
           }
         }
       } catch (e) {
@@ -63,11 +83,11 @@ export default function CashPage() {
     })();
   }, [setYearlyBudget]);
 
-  // 2. 실시간 가격 로드 (나스닥: 418660, 빅테크: 465610)
-  const { price: priceN } = useLivePrice("418660");
-  const { price: priceB } = useLivePrice("465610");
+  // 3. 실시간 가격 로드 (캐시 적용됨)
+  const { price: priceN } = useLivePrice("418660"); // 나스닥
+  const { price: priceB } = useLivePrice("465610"); // 빅테크
 
-  /* ===== 3. 계산 로직 적용 ===== */
+  /* ===== 4. 계산 로직 적용 ===== */
   
   // A. 연간 배분 (나스닥 60%, 빅테크 40%)
   const yearlyNasdaq = inputBudget * 0.6;
