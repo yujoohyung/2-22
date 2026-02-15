@@ -46,6 +46,9 @@ export const useAppStore = create(
     (set, get) => ({
       yearlyBudget: 20_000_000,
 
+      // [추가] 시장 데이터 캐시 (코드별 저장)
+      marketData: {}, 
+
       stepQty: {
         nasdaq2x:  { s1: 0, s2: 0, s3: 0 },
         bigtech2x: { s1: 0, s2: 0, s3: 0 },
@@ -60,10 +63,15 @@ export const useAppStore = create(
       setYearlyBudget: (amt) =>
         set((s) => (s.yearlyBudget === amt ? s : { yearlyBudget: amt })),
 
+      // [추가] 데이터 업데이트 액션
+      setMarketData: (code, data) =>
+        set((s) => ({
+          marketData: { ...s.marketData, [code]: data }
+        })),
+
       setStepQty: (next) =>
         set((s) => {
           const merged = { ...s.stepQty, ...next };
-          // 변화 없으면 스킵
           if (shallowObjEqual(s.stepQty.nasdaq2x, merged.nasdaq2x) &&
               shallowObjEqual(s.stepQty.bigtech2x, merged.bigtech2x)) return s;
           return { stepQty: merged };
@@ -72,7 +80,6 @@ export const useAppStore = create(
       setTrades: (symbol, rows = []) =>
         set((s) => {
           const prev = s.trades?.[symbol] || [];
-          // 동일 내용이면 업데이트 스킵 → 무한루프 차단
           if (shallowArrayOfObjEqual(prev, rows)) return s;
           return { trades: { ...s.trades, [symbol]: rows } };
         }),
@@ -81,7 +88,6 @@ export const useAppStore = create(
         set((s) => {
           const prev = s.trades?.[symbol] || [];
           const next = [...prev, row];
-          // 직전 항목과 완전히 같으면 중복 추가 방지(선택)
           if (prev.length && shallowObjEqual(prev[prev.length - 1], row)) return s;
           return { trades: { ...s.trades, [symbol]: next } };
         }),
@@ -89,13 +95,17 @@ export const useAppStore = create(
     {
       name: "app-storage",
       storage: createJSONStorage(() => localStorage),
-      // persist로 복원 시 불필요 렌더 줄이기 위해 partialize도 고려 가능
-      // partialize: (s) => ({ yearlyBudget: s.yearlyBudget, stepQty: s.stepQty, trades: s.trades })
+      // persist 저장 시 marketData도 포함하여 새로고침 해도 데이터 유지
+      partialize: (s) => ({
+        yearlyBudget: s.yearlyBudget,
+        stepQty: s.stepQty,
+        trades: s.trades,
+        marketData: s.marketData, // 캐시 저장
+      }),
     }
   )
 );
 
-/** 예치금 잔액 셀렉터 */
 export const selectCashRemain = (s) => {
   const n = sumBuySell(s.trades.NASDAQ2X);
   const b = sumBuySell(s.trades.BIGTECH2X);
