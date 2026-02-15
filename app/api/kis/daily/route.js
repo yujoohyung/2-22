@@ -39,38 +39,46 @@ export async function GET(req) {
   let end   = (url.searchParams.get("end")   || "").replace(/-/g, "");
   if (!/^\d{8}$/.test(end) || end > today) end = today;
   if (!/^\d{8}$/.test(start)) {
-    const d = new Date(); d.setDate(d.getDate() - 400);
+    const d = new Date(); d.setDate(d.getDate() - 400); // 200일선 넉넉히
     start = toYmd(d);
   }
   if (start > end) [start, end] = [end, start];
 
   try {
     const token = await getKisToken();
+    let arr = [];
+    let methodUsed = "none";
+    let debugRaw = null;
 
-    // 1) 정식 "일자별 시세" 시도 (FHKST01010400)
-    const ep1 =
-      `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price` +
+    // [수정됨] 1순위: 차트용 API (FHKST03010100) 
+    // 이유: 일반 시세 API는 100건 제한이 있어 200일선 계산이 불가능함. 차트 API는 제한이 넉넉함.
+    const epChart =
+      `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice` +
       `?fid_cond_mrkt_div_code=J` +
       `&fid_input_iscd=${enc(code)}` +
       `&fid_input_date_1=${start}` +
       `&fid_input_date_2=${end}` +
-      `&fid_period_div_code=D` +          // ✅ 중요!
-      `&fid_org_adj_prc=1`;               // 수정주가(원하면 0)
+      `&fid_period_div_code=D` +
+      `&fid_org_adj_prc=1`;
 
-    const r1 = await kisGet(ep1, process.env.KIS_TR_DAILY || "FHKST01010400", token);
+    const r1 = await kisGet(epChart, "FHKST03010100", token);
 
-    let arr = [];
     if (r1.ok && r1.json) {
       const j = r1.json;
       arr = Array.isArray(j.output) ? j.output :
-            Array.isArray(j.output1) ? j.output1 : [];
+            Array.isArray(j.output1) ? j.output1 : 
+            Array.isArray(j.output2) ? j.output2 : [];
+      
+      if (arr.length > 0) {
+        methodUsed = "chart(primary)";
+        debugRaw = r1.json;
+      }
     }
 
-    // 2) 폴백: 차트용 엔드포인트 (FHKST03010100) — 계정/종목에 따라 이쪽이 잘 나옴
-    let fallbackUsed = false;
-    if (!arr || arr.length === 0) {
-      const ep2 =
-        `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice` +
+    // 2순위: 데이터가 없을 경우 일반 시세 API (FHKST01010400) 시도 (폴백)
+    if (arr.length === 0) {
+      const epDaily =
+        `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price` +
         `?fid_cond_mrkt_div_code=J` +
         `&fid_input_iscd=${enc(code)}` +
         `&fid_input_date_1=${start}` +
@@ -78,24 +86,21 @@ export async function GET(req) {
         `&fid_period_div_code=D` +
         `&fid_org_adj_prc=1`;
 
-      const r2 = await kisGet(ep2, "FHKST03010100", token);
+      const r2 = await kisGet(epDaily, process.env.KIS_TR_DAILY || "FHKST01010400", token);
       if (r2.ok && r2.json) {
         const j2 = r2.json;
         arr = Array.isArray(j2.output) ? j2.output :
               Array.isArray(j2.output1) ? j2.output1 : [];
-        if (arr && arr.length) fallbackUsed = true;
+        methodUsed = "daily(fallback)";
+        debugRaw = r2.json;
       }
     }
 
     return Response.json({
       ok: true,
       output: arr || [],
-      used: fallbackUsed ? "fallback" : "primary",
-      raw: debug ? {
-        start, end, code,
-        primary: r1?.json ? { rt_cd: r1.json.rt_cd, msg_cd: r1.json.msg_cd, msg1: r1.json.msg1 } : { status: r1.status },
-        fallback: fallbackUsed ? "FHKST03010100" : null,
-      } : undefined,
+      used: methodUsed,
+      raw: debug ? debugRaw : undefined,
     });
   } catch (e) {
     return Response.json({ ok: false, error: String(e?.message || e) }, { status: 200 });
