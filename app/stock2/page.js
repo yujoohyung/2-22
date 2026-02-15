@@ -7,8 +7,12 @@ const CODE = "465610"; // 빅테크
 const SYMBOL = "stock2";
 const OTHER_SYMBOL = "dashboard";
 
-/* 유틸 함수 */
-function todayLocal() { const d = new Date(); return d.toISOString().slice(0,10); }
+function todayLocal() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 const dkey = (s) => (s ? String(s).replace(/-/g, "").slice(0, 8) : "");
 const fmt = (n) => (n == null || Number.isNaN(n) ? "-" : Number(n).toLocaleString("ko-KR"));
 const pct = (n) => (n == null || Number.isNaN(n) ? "-" : `${Number(n).toFixed(2)}%`);
@@ -16,17 +20,22 @@ const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 /* RSI 계산 */
 function calcRSI_Cutler(values, period = 14) {
-  const n = values.length; const out = Array(n).fill(null);
-  if (n < period + 1) return out;
+  const n = values.length;
+  const out = Array(n).fill(null);
+  if (!Array.isArray(values) || n < period + 1) return out;
   const gains = Array(n).fill(0), losses = Array(n).fill(0);
   for (let i = 1; i < n; i++) {
-    const d = values[i] - values[i - 1]; if (d > 0) gains[i] = d; else losses[i] = -d;
+    const d = values[i] - values[i - 1];
+    gains[i] = d > 0 ? d : 0;
+    losses[i] = d < 0 ? -d : 0;
   }
-  let sumG = 0, sumL = 0; for (let i = 1; i <= period; i++) { sumG += gains[i]; sumL += losses[i]; }
+  let sumG = 0, sumL = 0;
+  for (let i = 1; i <= period; i++) { sumG += gains[i]; sumL += losses[i]; }
   let avgG = sumG / period, avgL = sumL / period;
   out[period] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - 100 / (1 + (avgG / avgL));
   for (let i = period + 1; i < n; i++) {
-    sumG += gains[i] - gains[i - period]; sumL += losses[i] - losses[i - period];
+    sumG += gains[i] - gains[i - period];
+    sumL += losses[i] - losses[i - period];
     avgG = sumG / period; avgL = sumL / period;
     out[i] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - 100 / (1 + (avgG / avgL));
   }
@@ -34,13 +43,13 @@ function calcRSI_Cutler(values, period = 14) {
 }
 
 function useOtherNow(otherKey) {
-  const [val, setVal] = useState(0);
+  const [otherNow, setOtherNow] = useState(0);
   useEffect(() => {
-    const load = () => { try { setVal(Number(JSON.parse(localStorage.getItem(`now:${otherKey}`) || "0")) || 0); } catch {} };
+    const load = () => { try { setOtherNow(Number(JSON.parse(localStorage.getItem(`now:${otherKey}`) || "0")) || 0); } catch {} };
     load(); window.addEventListener("storage", load); window.addEventListener("focus", load);
     return () => { window.removeEventListener("storage", load); window.removeEventListener("focus", load); };
   }, [otherKey]);
-  return val;
+  return otherNow;
 }
 
 export default function Stock2Page() {
@@ -50,28 +59,31 @@ export default function Stock2Page() {
   const [nowQuote, setNowQuote] = useState(null);
   const topTableScrollRef = useRef(null);
   const [scrolled, setScrolled] = useState(false);
+  
   const otherNow = useOtherNow(OTHER_SYMBOL);
 
   useEffect(() => { if (!(trades[SYMBOL] || []).length) setTrades(SYMBOL, []); }, []);
 
-  // 1. 데이터 로드 (200일선 없음)
+  // 1. 데이터 로드 (200일선 X)
   useEffect(() => {
     (async () => {
       try {
         const d = new Date();
-        const end = d.toISOString().slice(0,10).replace(/-/g,"");
+        const ymd = (date) => date.toISOString().slice(0,10).replace(/-/g,"");
+        const end = ymd(d);
         d.setDate(d.getDate() - 150);
-        const start = d.toISOString().slice(0,10).replace(/-/g,"");
+        const start = ymd(d);
 
         const res = await fetch(`/api/kis/daily?code=${CODE}&start=${start}&end=${end}`);
         const json = await res.json();
         let rows = (json.output || []).map(x => ({
           date: x.stck_bsop_date || x.date,
           close: Number(x.stck_clpr || x.close),
-          prev: Number(x.prdy_clpr || x.prev),
+          prev: Number(x.prdy_clpr || x.prev)
         })).filter(r => r.date).sort((a,b) => a.date.localeCompare(b.date));
 
-        const map = new Map(); rows.forEach(r => map.set(r.date, r));
+        const map = new Map();
+        rows.forEach(r => map.set(r.date, r));
         rows = Array.from(map.values());
 
         const series = rows.map(r => r.close);
@@ -95,7 +107,7 @@ export default function Stock2Page() {
     })();
   }, []);
 
-  // 2. 실시간
+  // 실시간 시세
   useEffect(() => {
     if (!isDailyReady) return;
     let es = null;
@@ -104,7 +116,7 @@ export default function Stock2Page() {
       es.onmessage = (e) => {
         const m = JSON.parse(e.data);
         if (m.type === "tick") {
-          setNowQuote({ price: Number(m.price) });
+          setNowQuote({ price: Number(m.price), high: Number(m.high) });
           try { localStorage.setItem(`now:${SYMBOL}`, JSON.stringify(Number(m.price))); } catch {}
         }
       };
@@ -112,7 +124,7 @@ export default function Stock2Page() {
     return () => es && es.close();
   }, [isDailyReady]);
 
-  // 3. 스크롤
+  // 스크롤
   useEffect(() => {
     if (scrolled || !apiRows.length) return;
     if (topTableScrollRef.current) {
@@ -121,23 +133,18 @@ export default function Stock2Page() {
     }
   }, [apiRows, scrolled]);
 
-  // 4. 병합
+  // 병합
   const rows = useMemo(() => {
     const buyMap = new Map();
-    const costMap = new Map();
     (trades[SYMBOL] || []).forEach(t => {
       const k = dkey(t.date);
       buyMap.set(k, (buyMap.get(k) || 0) + Number(t.qty));
-      costMap.set(k, (costMap.get(k) || 0) + Number(t.qty) * Number(t.price));
     });
-    
-    let cumQty = 0, cumCost = 0;
+    let cum = 0;
+
     return apiRows.map(r => {
-      const q = buyMap.get(r.date) || 0;
-      const c = costMap.get(r.date) || 0;
-      cumQty += q; cumCost += c;
-      const avg = cumQty > 0 ? cumCost / cumQty : 0;
-      return { ...r, qty: q, cumQty, avgCost: avg };
+      cum += (buyMap.get(r.date) || 0);
+      return { ...r, qty: buyMap.get(r.date)||0, cumQty: cum };
     });
   }, [apiRows, trades]);
 
@@ -158,12 +165,13 @@ export default function Stock2Page() {
     const next = txRows.filter(r => r._txid !== id);
     setTxRows(next); localStorage.setItem(TX_KEY, JSON.stringify(next));
   };
-
-  const handleTx = (side) => {
+  
+  const handleTx = async (side) => {
     const p = Number(priceIn), q = Number(qtyIn);
-    if (!p || !q) return;
+    if (!p || !q) return alert("값 입력 확인");
     const _txid = uid();
-    addTrade(SYMBOL, { _txid, date, price: p, qty: side==="BUY"?q:0, sellQty: side==="SELL"?q:0 });
+    const tx = { _txid, date, price: p, qty: side==="BUY"?q:0, sellQty: side==="SELL"?q:0 };
+    addTrade(SYMBOL, tx);
     saveTx({ _txid, _ts: Date.now(), type: side, date, symbol: SYMBOL, price: p, qty: q });
     setPriceIn(""); setQtyIn("");
   };
@@ -200,30 +208,35 @@ export default function Stock2Page() {
 
   return (
     <div style={{ padding: 16, maxWidth: 800, margin: "0 auto" }}>
-      <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12 }}>TIGER 미국빅테크TOP7 레버리지</h2>
+      <h2 style={{ fontSize: 18, fontWeight: 700 }}>TIGER 미국빅테크TOP7 레버리지</h2>
       
       {/* 200일선 없음 */}
-      <div ref={topTableScrollRef} style={{ maxHeight: 350, overflowY: "auto", border: "1px solid #eee", borderRadius: 8, marginBottom: 16 }}>
+      <div ref={topTableScrollRef} style={{ maxHeight: 400, overflowY: "auto", border: "1px solid #eee", borderRadius: 8, marginBottom: 16 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead style={{ position: "sticky", top: 0, background: "#f8f9fa", zIndex: 1 }}>
-            <tr>{["신호", "날짜", "주가", "등락", "RSI", "평단", "매수", "누적"].map(h => <th key={h} style={{padding:"10px 8px", textAlign:"right", borderBottom:"1px solid #eee"}}>{h}</th>)}</tr>
+            <tr>
+              {["신호", "날짜", "주가", "RSI", "매수", "누적"].map(h => 
+                <th key={h} style={{ padding: 8, textAlign: "right" }}>{h}</th>)}
+            </tr>
           </thead>
           <tbody>
             {rows.map((r, i) => {
               const isLast = i === rows.length - 1;
               const p = (isLast && nowQuote) ? nowQuote.price : r.close;
-              const dp = (isLast && nowQuote) ? ((p - (rows[i-1]?.close||p))/(rows[i-1]?.close||p)*100) : r.dailyPct;
               const s1 = stepQty.bigtech2x?.s1 || 0;
-              let sigDisplay = r.signal === "1단계" ? `1단계(${s1})` : r.signal;
+              let sigDisplay = "";
+              if (r.signal === "1단계") sigDisplay = `1단계(${s1})`;
+              else if (r.signal === "2단계") sigDisplay = "2단계";
+              else if (r.signal === "3단계") sigDisplay = "3단계";
 
               return (
-                <tr key={i} style={{ borderTop: "1px solid #f5f5f5" }}>
+                <tr key={i} style={{ borderTop: "1px solid #eee" }}>
                   <td style={{ padding: 8, textAlign: "right", color: "red", fontWeight: "bold" }}>{sigDisplay}</td>
                   <td style={{ padding: 8, textAlign: "right" }}>{r.date}</td>
-                  <td style={{ padding: 8, textAlign: "right" }}>{fmt(p)}</td>
-                  <td style={{ padding: 8, textAlign: "right", color: dp > 0 ? "red" : "blue" }}>{pct(dp)}</td>
+                  <td style={{ padding: 8, textAlign: "right" }}>
+                    {fmt(p)} {isLast && nowQuote && <span style={{fontSize:10, color:"green"}}>Live</span>}
+                  </td>
                   <td style={{ padding: 8, textAlign: "right" }}>{r.rsi?.toFixed(1)||"-"}{r.rsi<=30 && "🔥"}</td>
-                  <td style={{ padding: 8, textAlign: "right" }}>{fmt(Math.round(r.avgCost))}</td>
                   <td style={{ padding: 8, textAlign: "right" }}>{fmt(r.qty)}</td>
                   <td style={{ padding: 8, textAlign: "right" }}>{fmt(r.cumQty)}</td>
                 </tr>
@@ -233,6 +246,7 @@ export default function Stock2Page() {
         </table>
       </div>
 
+      {/* 입력 폼 */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, padding: 12, background: "#f9fafb", borderRadius: 8 }}>
         <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={inputStyle} />
         <input type="number" placeholder="가격" value={priceIn} onChange={e=>setPriceIn(e.target.value)} style={inputStyle} />
@@ -241,6 +255,7 @@ export default function Stock2Page() {
         <button onClick={()=>handleTx("SELL")} style={{...btnStyle, background:"#ef4444"}}>매도</button>
       </div>
 
+      {/* 오늘 거래 로그 */}
       <div style={{ marginBottom: 16, border: "1px solid #eee", borderRadius: 8, padding: 12 }}>
         <h3 style={{ fontSize: 14, fontWeight: "bold", marginBottom: 8 }}>오늘 거래 ({date})</h3>
         {todayTx.length === 0 ? <div style={{color:"#999", fontSize:13}}>거래 내역 없음</div> : (
@@ -262,6 +277,7 @@ export default function Stock2Page() {
         )}
       </div>
 
+      {/* KPI 대시보드 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <Card title="현재가" val={`${fmt(curPrice)}원`} />
         <Card title="평균단가" val={`${fmt(Math.round(avgPrice))}원`} />
