@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
-import { supa } from "@/lib/supaClient";
+// [수정] supa 대신 getBrowserClient를 가져옵니다.
+import { getBrowserClient } from "@/lib/supaClient";
 
-/* 지표 함수 */
+/* RSI 계산 함수 */
 function calcRSI_Cutler(values, period = 14) {
   const n = values.length;
   if (n < period + 1) return null;
@@ -16,10 +17,7 @@ function calcRSI_Cutler(values, period = 14) {
   let sumG = 0, sumL = 0;
   for (let i = 1; i <= period; i++) { sumG += gains[i]; sumL += losses[i]; }
   let avgG = sumG / period, avgL = sumL / period;
-  // 마지막 값(현재 RSI)만 필요
-  const lastI = n - 1;
-  // 전체 순회하며 마지막까지 계산
-  let currentRsi = 0;
+  
   for (let i = period + 1; i < n; i++) {
     sumG += gains[i] - gains[i - period];
     sumL += losses[i] - losses[i - period];
@@ -41,9 +39,8 @@ function useStockData(code) {
     let isMounted = true;
     const fetchData = async () => {
       try {
-        // 1. 기본 데이터 (Price, RSI) - Fast
         const [resDaily, resNow] = await Promise.all([
-          fetch(`/api/kis/daily?code=${code}`), // 150일만
+          fetch(`/api/kis/daily?code=${code}`),
           fetch(`/api/kis/now?code=${code}`)
         ]);
         const jsonDaily = await resDaily.json();
@@ -52,30 +49,25 @@ function useStockData(code) {
         if (!isMounted) return;
 
         let items = jsonDaily.output || [];
-        // 날짜 오름차순 정렬
         items.sort((a, b) => (a.stck_bsop_date || a.date).localeCompare(b.stck_bsop_date || b.date));
         
         const closes = items.map(i => Number(i.stck_clpr || i.close));
         const rsi = calcRSI_Cutler(closes, 14);
         const nowPrice = Number(jsonNow.output?.stck_prpr || 0) || (closes.length ? closes[closes.length-1] : 0);
 
-        // 1차 업데이트 (RSI, 가격)
         const baseData = { price: nowPrice, rsi, ma200: null, ready: true };
-        setMarketData(code, baseData); // 화면 갱신
+        setMarketData(code, baseData);
 
-        // 2. 200일선 데이터 (별도 요청) - Slow but Non-blocking
         const resMa = await fetch(`/api/kis/ma200?symbol=${code}`);
         const jsonMa = await resMa.json();
         
         if (isMounted && jsonMa.ok && jsonMa.ma200 > 0) {
-          // 2차 업데이트 (200일선 추가)
           setMarketData(code, { ...baseData, ma200: jsonMa.ma200 });
         }
-
       } catch (e) { console.error(e); }
     };
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(fetchData, 30000); 
     return () => { isMounted = false; clearInterval(interval); };
   }, [code, setMarketData]);
 
@@ -89,12 +81,18 @@ export default function TotalPage() {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supa.auth.getSession();
-      if (data?.session) {
-        const res = await fetch("/api/user-settings/me", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
-        const d = await res.json();
-        if (d?.data?.yearly_budget) setYearlyBudget(Number(d.data.yearly_budget));
-      }
+      try {
+        // [수정] getBrowserClient()를 사용하여 supabase 인스턴스를 가져옵니다.
+        const supabase = getBrowserClient();
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (sessionData?.session) {
+          const res = await fetch("/api/user-settings/me", { 
+            headers: { Authorization: `Bearer ${sessionData.session.access_token}` } 
+          });
+          const d = await res.json();
+          if (d?.data?.yearly_budget) setYearlyBudget(Number(d.data.yearly_budget));
+        }
+      } catch (e) { console.error("Session fetch error", e); }
     })();
   }, [setYearlyBudget]);
 
@@ -103,7 +101,7 @@ export default function TotalPage() {
 
   let signalType = "HOLD"; 
   let stage = 0; 
-  let signalText = nasdaq.ready ? "관망" : "로딩.."; 
+  let signalText = nasdaq.ready ? "관망" : "로딩중.."; 
   let signalColor = nasdaq.ready ? "#10b981" : "#9ca3af"; 
 
   if (nasdaq.ready) {
@@ -123,7 +121,6 @@ export default function TotalPage() {
   const amtBigtech = monthAvg * 0.40 * stageRatio * factor;
   const qtyN = (signalType === "BUY" && priceN > 0) ? Math.floor(amtNasdaq / priceN) : 0;
   const qtyB = (signalType === "BUY" && priceB > 0) ? Math.floor(amtBigtech / priceB) : 0;
-
   const won = (n) => (n > 0 ? Math.round(n).toLocaleString("ko-KR") + "원" : "-");
 
   return (
@@ -167,7 +164,7 @@ export default function TotalPage() {
           </div>
         </div>
       </div>
-      <div className="footer-info">* 매도 기준: 200일선({ma200N ? won(ma200N) : "로딩중"}) 하회 시</div>
+      <div className="footer-info">* 매도 기준: 200일선({ma200N ? won(ma200N) : "..."}) 하회 시</div>
       <style jsx>{`
         .total-wrap { max-width: 800px; margin: 0 auto; padding: 20px; font-family: -apple-system, sans-serif; }
         .title { font-size: 22px; font-weight: 800; margin-bottom: 20px; color: #111; }
