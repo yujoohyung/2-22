@@ -30,7 +30,7 @@ async function kisGet(ep, trId, token) {
 
 export async function GET(req) {
   const url = new URL(req.url);
-  const code = (url.searchParams.get("code") || "418660").trim(); // 기본: TIGER 나스닥2x
+  const code = (url.searchParams.get("code") || "418660").trim();
   const debug = url.searchParams.get("debug") === "1";
 
   // 날짜 보정
@@ -50,8 +50,8 @@ export async function GET(req) {
     let methodUsed = "none";
     let debugRaw = null;
 
-    // [수정됨] 1순위: 차트용 API (FHKST03010100) 
-    // 이유: 일반 시세 API는 100건 제한이 있어 200일선 계산이 불가능함. 차트 API는 제한이 넉넉함.
+    // 1순위: 차트용 API (FHKST03010100)
+    // 장점: 한 번에 많은 데이터(수백 일 치)를 조회 가능
     const epChart =
       `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice` +
       `?fid_cond_mrkt_div_code=J` +
@@ -65,9 +65,11 @@ export async function GET(req) {
 
     if (r1.ok && r1.json) {
       const j = r1.json;
-      arr = Array.isArray(j.output) ? j.output :
+      // [핵심 수정] output2 (과거 데이터 배열)를 가장 먼저 확인
+      // output1은 현재가 1개만 들어있으므로, 이걸 먼저 잡으면 200일선 계산 불가
+      arr = Array.isArray(j.output2) ? j.output2 :
             Array.isArray(j.output1) ? j.output1 : 
-            Array.isArray(j.output2) ? j.output2 : [];
+            Array.isArray(j.output) ? j.output : [];
       
       if (arr.length > 0) {
         methodUsed = "chart(primary)";
@@ -75,7 +77,7 @@ export async function GET(req) {
       }
     }
 
-    // 2순위: 데이터가 없을 경우 일반 시세 API (FHKST01010400) 시도 (폴백)
+    // 2순위: 차트 API 실패 시 일반 시세 API (FHKST01010400) 시도 (폴백)
     if (arr.length === 0) {
       const epDaily =
         `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price` +
