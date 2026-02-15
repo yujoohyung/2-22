@@ -3,29 +3,24 @@ import { getKisToken } from "@/lib/kis.server";
 
 export const dynamic = "force-dynamic";
 
-/* [수정] 서버 환경 타지 않는 강력한 한국 날짜 구하기 */
+/* 한국 시간 구하기 (서버 시간대 이슈 방지) */
 const getKSTDateString = (offsetDays = 0) => {
   const now = new Date();
-  // 현재 UTC 시간 계산
   const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  // 한국 시간(KST) = UTC + 9시간
   const kstGap = 9 * 60 * 60 * 1000;
   const kstDate = new Date(utc + kstGap);
-  
-  // 날짜 더하기/빼기
   kstDate.setDate(kstDate.getDate() + offsetDays);
 
   const y = kstDate.getFullYear();
   const m = String(kstDate.getMonth() + 1).padStart(2, "0");
   const d = String(kstDate.getDate()).padStart(2, "0");
-  
-  return `${y}${m}${d}`; // 예: "20240215"
+  return `${y}${m}${d}`;
 };
 
-/* RSI 계산 함수 (14일) */
+/* RSI 계산 (전체 데이터 사용) */
 function calculateRSI(prices, period = 14) {
   if (!prices || prices.length < period + 1) return null;
-  const reversed = [...prices].reverse(); // 과거 -> 현재 순으로 정렬
+  const reversed = [...prices].reverse();
   
   let gains = 0, losses = 0;
   for (let i = 1; i <= period; i++) {
@@ -63,13 +58,11 @@ export async function GET(req) {
       appsecret: process.env.KIS_APP_SECRET
     };
 
-    // 1. 기간 설정 (넉넉하게 2년)
-    const strEnd = getKSTDateString(0);      // 오늘
-    const strStart = getKSTDateString(-730); // 2년 전
+    // 2년치 데이터 요청 (RSI 정확도 확보)
+    const strEnd = getKSTDateString(0);
+    const strStart = getKSTDateString(-730);
 
-    console.log(`[MA200] Fetching ${symbol} (${strStart} ~ ${strEnd})`);
-
-    // 2. 일봉 차트 & 현재가 동시 요청 (속도 향상 및 안전성)
+    // Promise.all로 동시에 요청해서 속도 최적화 (결과는 하나로 합침)
     const urlDaily = `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?fid_cond_mrkt_div_code=J&fid_input_iscd=${symbol}&fid_input_date_1=${strStart}&fid_input_date_2=${strEnd}&fid_period_div_code=D&fid_org_adj_prc=0`;
     const urlNow = `${process.env.KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=J&fid_input_iscd=${symbol}`;
 
@@ -78,71 +71,52 @@ export async function GET(req) {
       fetch(urlNow, { headers, tr_id: "FHKST01010100", cache: "no-store" })
     ]);
 
-    // 3. 데이터 파싱
     let items = [];
     let currentPrice = 0;
 
-    // 일봉 데이터 처리
     if (resDaily.status === "fulfilled" && resDaily.value.ok) {
       const data = await resDaily.value.json();
       items = data?.output2 || []; 
-    } else {
-      console.error("[MA200] Daily Chart Fetch Failed");
     }
-
-    // 현재가 데이터 처리
     if (resNow.status === "fulfilled" && resNow.value.ok) {
       const data = await resNow.value.json();
       currentPrice = Number(data?.output?.stck_prpr || 0);
-    } else {
-      console.error("[MA200] Current Price Fetch Failed");
     }
 
-    // 4. 데이터가 아예 없는 경우 (최악의 상황)
+    // 데이터가 전혀 없으면 에러 반환
     if (items.length === 0 && currentPrice === 0) {
-      return NextResponse.json({ ok: false, error: "데이터 조회 실패 (장 시작 전이거나 API 오류)" });
+      return NextResponse.json({ ok: false, error: "데이터 없음" });
     }
 
-    // 5. 데이터 보정 (차트 최신화)
+    // 최신가 보정
     if (items.length > 0 && currentPrice > 0) {
-      // 차트의 최신 데이터(items[0]) 가격을 실시간 가격으로 덮어씀 (RSI 정확도 향상)
       items[0].stck_clpr = String(currentPrice);
-    } else if (items.length === 0 && currentPrice > 0) {
-      // 차트가 깨졌는데 현재가만 있는 경우 -> 최소한 현재가라도 리턴
-      return NextResponse.json({ ok: true, symbol, price: currentPrice, ma200: 0, rsi: null });
     }
 
-    // 6. 지표 계산
-    
-    // [수정 포인트 1] MA200: 데이터가 200개 이상일 때만 계산
+    // MA200 계산 (데이터 200개 이상일 때만)
     const recent200 = items.slice(0, 200);
     let ma200 = 0;
-    
     if (recent200.length >= 200) { 
       let sum = 0;
       for (const day of recent200) sum += Number(day.stck_clpr);
-      ma200 = sum / 200; // 정확히 200으로 나눔
-    } else {
-      ma200 = 0; // 데이터 부족 시 0 처리 (화면 표시 방지)
+      ma200 = sum / 200;
     }
 
-    // [수정 포인트 2] RSI: 100개만 자르지 않고 전체 데이터 사용
-    // slice(0, 100) 제거함 -> 받아온 2년치(약 500개) 데이터를 모두 사용하여 RSI 정확도 대폭 향상
+    // RSI 계산 (전체 데이터 사용)
     const rsiSource = items.map(i => Number(i.stck_clpr));
     const rsi = calculateRSI(rsiSource, 14);
 
-    // 최종 반환
+    // [중요] 클라이언트에게는 딱 하나의 객체만 보냄
     return NextResponse.json({
       ok: true,
       symbol,
-      price: currentPrice || Number(items[0].stck_clpr), // 현재가 우선, 없으면 차트 종가
+      price: currentPrice || Number(items[0]?.stck_clpr || 0),
       ma200,
       rsi,
-      date: items[0].stck_bsop_date
+      date: items[0]?.stck_bsop_date
     });
 
   } catch (e) {
-    console.error("[MA200] Critical Error:", e);
     return NextResponse.json({ ok: false, error: e.message });
   }
 }
