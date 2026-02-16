@@ -2,17 +2,15 @@
 
 import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
-import { supa } from "@/lib/supaClient";
+import { getBrowserClient } from "@/lib/supaClient"; // [수정] 올바른 import
 
-// [중요] 개별 페이지와 동일한 알고리즘 사용
 function calcRSI_Cutler(values, period = 14) {
   const n = values.length;
   if (!Array.isArray(values) || n < period + 1) return null;
-  const gains = Array(n).fill(0), losses = Array(n).fill(0);
+  const gains = new Array(n).fill(0), losses = new Array(n).fill(0);
   for (let i = 1; i < n; i++) {
-    const d = values[i] - values[i - 1];
-    gains[i] = d > 0 ? d : 0;
-    losses[i] = d < 0 ? -d : 0;
+    const diff = values[i] - values[i - 1];
+    if (diff > 0) gains[i] = diff; else losses[i] = -diff;
   }
   let sumG = 0, sumL = 0;
   for (let i = 1; i <= period; i++) { sumG += gains[i]; sumL += losses[i]; }
@@ -25,7 +23,7 @@ function calcRSI_Cutler(values, period = 14) {
     avgG = sumG / period; avgL = sumL / period;
     out[i] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - 100 / (1 + (avgG / avgL));
   }
-  return out; // 전체 배열 반환
+  return out;
 }
 
 function calcSMA(values, window) {
@@ -48,18 +46,16 @@ function useStockData(code) {
   const { marketData, dailyCache, setDailyCache } = useAppStore();
   const nowPrice = marketData[code]?.price || 0; 
 
-  // 캐시가 있으면 마지막 데이터(최신)를 바로 사용
   const cachedRows = dailyCache[code];
   const lastRow = cachedRows && cachedRows.length > 0 ? cachedRows[cachedRows.length - 1] : null;
 
   const [history, setHistory] = useState({ 
     rsi: lastRow?.rsi || null, 
-    ma200: lastRow?.ma200 || null, // 캐시에 ma200이 없다면 계산 필요할 수 있음(아래 로직 참조)
+    ma200: lastRow?.ma200 || null,
     ready: !!lastRow 
   });
 
   useEffect(() => {
-    // 이미 캐시가 있으면 재계산/재호출 안 함
     if (dailyCache[code] && dailyCache[code].length > 0) return;
 
     const fetchDaily = async () => {
@@ -74,7 +70,6 @@ function useStockData(code) {
         const json = await res.json();
         const rawArr = Array.isArray(json.output) ? json.output : (json.output2 || []);
         
-        // [중요] 개별 페이지와 동일한 중복 제거 로직
         const uniqueMap = new Map();
         rawArr.forEach((item) => {
           const key = item.stck_bsop_date || item.bstp_nmis || item.date;
@@ -82,7 +77,6 @@ function useStockData(code) {
         });
         const arr = Array.from(uniqueMap.values());
 
-        // 날짜 오름차순 정렬 (과거 -> 현재)
         const rows = arr.map((x) => ({
           date: x.stck_bsop_date || x.bstp_nmis || x.date,
           close: Number(x.stck_clpr || x.tdd_clsprc || x.close),
@@ -90,22 +84,19 @@ function useStockData(code) {
         
         rows.sort((a, b) => a.date.localeCompare(b.date));
 
-        // 지표 계산
         const series = rows.map(r => r.close);
         const rsiArr = calcRSI_Cutler(series, 14);
         const ma200Arr = calcSMA(series, 200);
 
-        // 캐시용 데이터 생성 (개별 페이지와 호환되게)
         const resRows = rows.map((r, i) => ({
           ...r,
-          price: r.close, // 개별 페이지 호환용
+          price: r.close,
           rsi: rsiArr[i],
-          ma200: ma200Arr[i] // TotalPage에서 필요
+          ma200: ma200Arr[i]
         }));
 
-        setDailyCache(code, resRows); // 전역 캐시에 저장
+        setDailyCache(code, resRows);
 
-        // 현재 상태 업데이트
         if (resRows.length > 0) {
           const last = resRows[resRows.length - 1];
           setHistory({ rsi: last.rsi, ma200: last.ma200, ready: true });
@@ -115,12 +106,9 @@ function useStockData(code) {
     fetchDaily();
   }, [code, dailyCache, setDailyCache]);
 
-  // 캐시가 업데이트되면 상태 동기화
   useEffect(() => {
     if (dailyCache[code] && dailyCache[code].length > 0) {
       const last = dailyCache[code][dailyCache[code].length - 1];
-      // ma200은 캐시에 없을 수도 있음(이전 버전 캐시라면). 방어코드.
-      // 하지만 위 로직대로면 저장됨.
       if (last) {
         setHistory({ rsi: last.rsi, ma200: last.ma200 || null, ready: true });
       }
@@ -139,6 +127,8 @@ export default function TotalPage() {
   useEffect(() => {
     (async () => {
       try {
+        // [수정] 올바른 클라이언트 사용
+        const supa = getBrowserClient();
         const { data } = await supa.auth.getSession();
         if (data?.session) {
           const res = await fetch("/api/user-settings/me", {

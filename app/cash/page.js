@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
-import { supa } from "@/lib/supaClient";
+import { getBrowserClient } from "@/lib/supaClient"; // [수정]
 import { saveUserSettings } from "@/lib/saveUserSettings";
 
 const won = (n) => Number(Math.round(n ?? 0)).toLocaleString("ko-KR") + "원";
@@ -18,6 +18,8 @@ export default function CashPage() {
   useEffect(() => {
     (async () => {
       try {
+        // [수정]
+        const supa = getBrowserClient();
         const { data } = await supa.auth.getSession();
         if (data?.session) {
           const res = await fetch("/api/user-settings/me", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
