@@ -2,8 +2,8 @@ import "@ant-design/v5-patch-for-react-19";
 import { Geist, Geist_Mono } from "next/font/google";
 import RebalanceBus from "../components/RebalanceBus";
 import NavBar from "../components/NavBar";
-import UserBar from "../components/UserBar"; // 하단 사용자 바
-// ※ globals.css 미사용 가정 → body에 inline style로 여백 처리
+import UserBar from "../components/UserBar";
+import GlobalMarketWatcher from "../components/GlobalMarketWatcher"; // [추가]
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -14,16 +14,16 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }) {
-  // UserBar 높이 50px 기준 + 여유 10px
   const bodyStyle = { paddingBottom: "60px" };
 
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`} style={bodyStyle}>
+        <GlobalMarketWatcher /> {/* [핵심] 전역 시세 관리자 추가 */}
         <RebalanceBus />
         <NavBar />
         {children}
-        <UserBar /> {/* 전 페이지 하단 고정: 아이디님 / 로그아웃 */}
+        <UserBar />
       </body>
     </html>
   );
