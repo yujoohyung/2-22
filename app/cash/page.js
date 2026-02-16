@@ -8,14 +8,11 @@ import { saveUserSettings } from "@/lib/saveUserSettings";
 
 /* ===== 실시간 가격 훅 (스토어 캐시 우선 사용) ===== */
 function useLivePrice(code) {
-  // 1. 스토어에서 캐시된 데이터 가져오기
   const { marketData, setMarketData } = useAppStore();
   const cachedPrice = marketData[code]?.price || 0;
   
-  // 2. 초기값을 캐시된 가격으로 설정 (0초 로딩)
   const [price, setPrice] = useState(cachedPrice);
 
-  // 3. 스토어 데이터가 외부(다른 탭/페이지)에서 업데이트되면 반영
   useEffect(() => {
     if (marketData[code]?.price) {
       setPrice(marketData[code].price);
@@ -31,7 +28,6 @@ function useLivePrice(code) {
         const data = await res.json();
         if (data.price && typeof data.price === 'number') {
           setPrice(data.price);
-          // 4. 가져온 최신 가격을 스토어에도 업데이트 (다른 페이지 공유)
           setMarketData(code, { ...marketData[code], price: data.price });
         }
       } catch (e) {
@@ -39,13 +35,11 @@ function useLivePrice(code) {
       }
     };
     
-    // 캐시가 없으면 즉시 실행, 있으면 백그라운드 갱신
-    if (cachedPrice === 0) fetchPrice();
-    else fetchPrice(); // 최신화 보장 위해 실행은 하되 화면은 이미 떠있음
-
+    // 즉시 실행 및 주기적 갱신
+    fetchPrice();
     const timer = setInterval(fetchPrice, 5000); 
     return () => clearInterval(timer);
-  }, [code, setMarketData]); // marketData는 의존성에서 제외하여 루프 방지
+  }, [code, setMarketData]); 
 
   return { price };
 }
@@ -56,10 +50,8 @@ const won = (n) => Number(Math.round(n ?? 0)).toLocaleString("ko-KR") + "원";
 export default function CashPage() {
   const { yearlyBudget, setYearlyBudget, setStepQty } = useAppStore();
   
-  // 1. 스토어에 저장된 예치금을 초기값으로 바로 사용 (로딩 없음)
   const [inputBudget, setInputBudget] = useState(yearlyBudget);
 
-  // 2. 서버 데이터 동기화 (뒷단 실행)
   useEffect(() => {
     (async () => {
       try {
@@ -71,9 +63,7 @@ export default function CashPage() {
           const d = await res.json();
           if (d?.data?.yearly_budget) {
             const serverValue = Number(d.data.yearly_budget);
-            // 스토어 업데이트
             setYearlyBudget(serverValue);
-            // 입력창도 최신값으로 동기화 (사용자가 입력 중이 아닐 때만 하는 게 좋지만, 단순화를 위해 반영)
             setInputBudget(serverValue);
           }
         }
@@ -83,34 +73,29 @@ export default function CashPage() {
     })();
   }, [setYearlyBudget]);
 
-  // 3. 실시간 가격 로드 (캐시 적용됨)
   const { price: priceN } = useLivePrice("418660"); // 나스닥
   const { price: priceB } = useLivePrice("465610"); // 빅테크
 
   /* ===== 4. 계산 로직 적용 ===== */
-  
-  // A. 연간 배분 (나스닥 60%, 빅테크 40%)
   const yearlyNasdaq = inputBudget * 0.6;
   const yearlyBigTech = inputBudget * 0.4;
 
-  // B. 월별 기준액 (연간 / 12)
   const monthNasdaq = yearlyNasdaq / 12;
   const monthBigTech = yearlyBigTech / 12;
 
-  // C. 단계별 매입 금액 (월별 매입금 * 비율 * 0.92)
   const factor = 0.92;
 
-  // [나스닥] 14% / 26% / 60%
+  // [나스닥]
   const n1_amt = monthNasdaq * 0.14 * factor;
   const n2_amt = monthNasdaq * 0.26 * factor;
   const n3_amt = monthNasdaq * 0.60 * factor;
 
-  // [빅테크] 14% / 26% / 60% (나스닥과 동일 비율 적용)
+  // [빅테크]
   const b1_amt = monthBigTech * 0.14 * factor;
   const b2_amt = monthBigTech * 0.26 * factor;
   const b3_amt = monthBigTech * 0.60 * factor;
 
-  // D. 수량 계산 (금액 / 실시간가)
+  // D. 수량 계산
   const n1_qty = priceN > 0 ? Math.floor(n1_amt / priceN) : 0;
   const n2_qty = priceN > 0 ? Math.floor(n2_amt / priceN) : 0;
   const n3_qty = priceN > 0 ? Math.floor(n3_amt / priceN) : 0;
@@ -133,7 +118,6 @@ export default function CashPage() {
     <div className="cash-container">
       <h1 className="title">예치금 및 매수설정</h1>
 
-      {/* 입력 섹션 */}
       <div className="input-card">
         <label>1년 총 납입금 (예상 연봉/저축액)</label>
         <div className="input-row">
@@ -146,7 +130,6 @@ export default function CashPage() {
           <button onClick={handleSave}>저장</button>
         </div>
         
-        {/* 월 평균 배분 정보 표시 */}
         <div className="info-row">
           <div>
             <span className="label">나스닥(60%) 월평균:</span> 
@@ -159,7 +142,6 @@ export default function CashPage() {
         </div>
       </div>
 
-      {/* 테이블 섹션 */}
       <div className="table-card">
         <div className="header-row">
           <div className="th">구분</div>
@@ -203,7 +185,6 @@ export default function CashPage() {
         
         .price-tag { font-size: 13px; color: #2563eb; font-weight: 700; display: block; margin-top: 2px; }
         
-        /* 모바일 최적화 (너비 480px 이하) */
         @media (max-width: 480px) {
           .cash-container { padding: 12px; }
           .title { font-size: 20px; margin-bottom: 16px; }

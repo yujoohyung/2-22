@@ -108,7 +108,8 @@ export default function Stock2Page() {
 
   /** 위 표용 원시 rows */
   const [apiRows, setApiRows] = useState([]);
-  const [isDailyReady, setIsDailyReady] = useState(false);
+  
+  // [수정1] isDailyReady 상태 삭제
 
   /** 상단 표 스크롤 참조 + 최초 진입 시 최신(맨아래)로 스크롤 */
   const topTableScrollRef = useRef(null);
@@ -133,7 +134,7 @@ export default function Stock2Page() {
         const out = d.output || d.output1 || [];
         const rawArr = Array.isArray(out) ? out : [];
 
-        // [수정] 클라이언트 측 중복 제거 로직 추가
+        // 클라이언트 측 중복 제거 로직
         const uniqueMap = new Map();
         rawArr.forEach((item) => {
           const key = item.stck_bsop_date || item.bstp_nmis || item.date;
@@ -179,9 +180,9 @@ export default function Stock2Page() {
         });
 
         setApiRows(resRows);
-        setIsDailyReady(true);
-      } catch {
-        setTimeout(() => setIsDailyReady(true), 1200);
+        // [수정2] setIsDailyReady(true) 삭제
+      } catch (e) {
+        console.error(e);
       }
     })();
   }, []);
@@ -189,8 +190,9 @@ export default function Stock2Page() {
   /** 현재가/고가 실시간(SSE) — 실패 시 REST 폴백 */
   const [nowQuote, setNowQuote] = useState(null);
 
+  // [수정3] 의존성 제거 ([]) 및 if문 삭제로 즉시 실행
   useEffect(() => {
-    if (!isDailyReady) return;
+    // if (!isDailyReady) return;  <-- 삭제됨
     let es = null, fallbackTimer = null, inFlight = false;
 
     const safeFetchNow = async () => {
@@ -208,6 +210,9 @@ export default function Stock2Page() {
       } finally { clearTimeout(to); inFlight = false; }
     };
 
+    // 마운트 직후 1회 즉시 실행
+    safeFetchNow();
+
     try {
       es = new EventSource(`/api/kis/stream?code=${CODE}`);
       es.onmessage = (ev) => {
@@ -223,7 +228,7 @@ export default function Stock2Page() {
       fallbackTimer = setInterval(safeFetchNow, 2000);
     }
     return () => { try { es && es.close(); } catch {}; if (fallbackTimer) clearInterval(fallbackTimer); };
-  }, [isDailyReady]);
+  }, []); // 의존성 배열 비움
 
   /** now 가격 캐시: 합산 계산용으로 localStorage 저장 */
   useEffect(() => {
