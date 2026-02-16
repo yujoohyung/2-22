@@ -7,7 +7,7 @@ import { useAppStore } from "../store";
 const CODE = "418660";
 
 /** 이 페이지 고유 키 */
-const SYMBOL = "dashboard"; // dashboard가 나스닥 페이지 키로 사용됨
+const SYMBOL = "dashboard"; 
 /** 합산 계산용: 반대편(빅테크) 심볼 */
 const OTHER_SYMBOL = "stock2";
 
@@ -94,7 +94,7 @@ const sPct = (v) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}%`;
 const sWon = (v) => `${v >= 0 ? "+" : "-"}${Number(Math.round(Math.abs(v))).toLocaleString("ko-KR")}원`;
 
 export default function DashboardPage() {
-  const { stepQty, trades, addTrade, setTrades } = useAppStore();
+  const { stepQty, trades, addTrade, setTrades, marketData, setMarketData } = useAppStore();
   const yearlyBudget = useAppStore((s) => s.yearlyBudget);
 
   const otherNow = useOtherNow(OTHER_SYMBOL);
@@ -106,12 +106,10 @@ export default function DashboardPage() {
   }, [trades, setTrades]);
 
   const [apiRows, setApiRows] = useState([]);
-  const [isDailyReady, setIsDailyReady] = useState(false);
-
   const topTableScrollRef = useRef(null);
   const [scrolledToBottomOnce, setScrolledToBottomOnce] = useState(false);
 
-  /** 일자별 시세 로드 (중복 제거 포함) */
+  /** 일자별 시세 로드 */
   useEffect(() => {
     (async () => {
       try {
@@ -119,7 +117,7 @@ export default function DashboardPage() {
         const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
         const today = new Date();
         const end = ymd(today);
-        const s = new Date(today); s.setDate(s.getDate() - 400); // 400일 전부터 (200일선/RSI 확보)
+        const s = new Date(today); s.setDate(s.getDate() - 400);
         const start = ymd(s);
 
         const res = await fetch(`/api/kis/daily?code=${CODE}&start=${start}&end=${end}`);
@@ -130,13 +128,10 @@ export default function DashboardPage() {
         const out = d.output || d.output1 || [];
         const rawArr = Array.isArray(out) ? out : [];
 
-        // [중복 제거] 날짜 기준
         const uniqueMap = new Map();
         rawArr.forEach((item) => {
           const key = item.stck_bsop_date || item.bstp_nmis || item.date;
-          if (key && !uniqueMap.has(key)) {
-            uniqueMap.set(key, item);
-          }
+          if (key && !uniqueMap.has(key)) uniqueMap.set(key, item);
         });
         const arr = Array.from(uniqueMap.values());
 
@@ -157,7 +152,6 @@ export default function DashboardPage() {
           const base = i > 0 ? rows[i - 1].close : (r.prev ?? r.close);
           const dp = base ? ((r.close - base) / base) * 100 : null;
 
-          // 매수 단계 (RSI 기준: 43/36/30)
           let sig = "";
           const rv = rsi[i];
           if (rv != null) {
@@ -166,7 +160,6 @@ export default function DashboardPage() {
             else if (rv <= 43) sig = "1단계";
           }
 
-          // 연 1회 매도: 200일선 하회 시
           const year = r.date?.slice(0, 4);
           const below200 = ma200[i] != null && r.close < ma200[i];
           const sellNow = !!(below200 && year && !soldYear.has(year));
@@ -176,20 +169,23 @@ export default function DashboardPage() {
         });
 
         setApiRows(resRows);
-        setIsDailyReady(true);
-      } catch {
-        setTimeout(() => setIsDailyReady(true), 1200);
+      } catch (e) {
+        console.error(e);
       }
     })();
   }, []);
 
-  /** 실시간 시세 */
-  const [nowQuote, setNowQuote] = useState(null);
+  /** [최적화] 실시간 시세 (캐시 사용 + SSE Cleanup) */
+  const cachedPrice = marketData[CODE]?.price || 0;
+  const [nowQuote, setNowQuote] = useState(cachedPrice > 0 ? { price: cachedPrice, high: 0 } : null);
 
   useEffect(() => {
-    if (!isDailyReady) return;
-    let es = null, fallbackTimer = null, inFlight = false;
+    let es = null;
+    let fallbackTimer = null;
+    let inFlight = false;
+    let isMounted = true;
 
+    // 1. 초기 1회 REST 호출 (빠른 응답)
     const safeFetchNow = async () => {
       if (inFlight) return;
       inFlight = true;
@@ -198,29 +194,56 @@ export default function DashboardPage() {
       try {
         const res = await fetch(`/api/kis/now?code=${CODE}`, { signal: ctrl.signal, cache: "no-store" });
         if (!res.ok) { await res.text().catch(() => ""); return; }
-        let d = null; try { d = await res.json(); } catch { return; }
+        const d = await res.json();
         if (!d || d.ok === false) return;
         const o = d.output || {};
-        setNowQuote({ price: Number(o.stck_prpr || 0), high: Number(o.stck_hgpr || 0) });
-      } finally { clearTimeout(to); inFlight = false; }
+        
+        if (isMounted) {
+          const newPrice = Number(o.stck_prpr || 0);
+          setNowQuote({ price: newPrice, high: Number(o.stck_hgpr || 0) });
+          // 스토어 업데이트 (캐시)
+          if (newPrice > 0) setMarketData(CODE, { ...marketData[CODE], price: newPrice });
+        }
+      } catch {
+      } finally { 
+        clearTimeout(to); 
+        inFlight = false; 
+      }
     };
 
+    safeFetchNow();
+
+    // 2. SSE 연결
     try {
       es = new EventSource(`/api/kis/stream?code=${CODE}`);
       es.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.type === "tick") {
-            setNowQuote({ price: Number(msg.price || 0), high: Number(msg.high || 0) });
+          if (msg.type === "tick" && isMounted) {
+            const newPrice = Number(msg.price || 0);
+            setNowQuote({ price: newPrice, high: Number(msg.high || 0) });
+            if (newPrice > 0) setMarketData(CODE, { ...marketData[CODE], price: newPrice });
           }
         } catch {}
       };
-      es.onerror = () => { try { es.close(); } catch {}; fallbackTimer = setInterval(safeFetchNow, 2000); };
+      es.onerror = () => {
+        try { es.close(); } catch {}
+        fallbackTimer = setInterval(safeFetchNow, 2000);
+      };
     } catch {
       fallbackTimer = setInterval(safeFetchNow, 2000);
     }
-    return () => { try { es && es.close(); } catch {}; if (fallbackTimer) clearInterval(fallbackTimer); };
-  }, [isDailyReady]);
+
+    // [중요] 페이지 벗어날 때 연결 끊기
+    return () => {
+      isMounted = false;
+      if (es) {
+        es.close();
+        es = null;
+      }
+      if (fallbackTimer) clearInterval(fallbackTimer);
+    };
+  }, []);
 
   /** now 가격 캐시 */
   useEffect(() => {
@@ -368,8 +391,6 @@ export default function DashboardPage() {
     await saveToServer({ side: "BUY", date, price, qty });
     setPriceInput(""); setQtyInput("");
     requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
-    
-    // (선택) 로컬 페이지 집계 API
     void fetch("/api/trades", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -386,8 +407,6 @@ export default function DashboardPage() {
     saveTx({ _txid, _ts: Date.now(), type: "SELL", date, symbol: SYMBOL, price, qty });
     await saveToServer({ side: "SELL", date, price, qty });
     setPriceInput(""); setQtyInput("");
-
-    // (선택) 로컬 페이지 집계 API
     void fetch("/api/trades", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -406,7 +425,6 @@ export default function DashboardPage() {
     [txRows, date]
   );
 
-  /** KPI 계산 */
   const buysThis = useMemo(() => {
     const arr = (trades[SYMBOL] || []).filter((t) => Number(t.qty) > 0);
     const qty = arr.reduce((s, t) => s + Number(t.qty || 0), 0);
@@ -437,7 +455,6 @@ export default function DashboardPage() {
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>TIGER 미국나스닥100레버리지</h1>
 
-        {/* 가격/지표 표 */}
         <section style={cardWrap}>
           <div ref={topTableScrollRef} style={{ maxHeight: 420, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -499,7 +516,6 @@ export default function DashboardPage() {
           <div style={footNote}>최신일이 맨 아래입니다. 처음 들어오면 자동으로 최신행으로 스크롤돼요.</div>
         </section>
 
-        {/* 입력 */}
         <section style={{ ...cardWrap, padding: 12 }}>
           <div style={controlsGrid}>
             <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} style={inputBase} autoComplete="off" />
@@ -510,7 +526,6 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* 오늘 거래 로그 */}
         <section style={cardWrap}>
           <div style={{ padding: 12 }}>
             <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>오늘 거래 ({date})</div>
@@ -545,7 +560,6 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* KPI */}
         <section style={cardWrap}>
           {(() => {
             const cur = nowQuote?.price ?? 0;
@@ -612,7 +626,6 @@ export default function DashboardPage() {
   );
 }
 
-/* 스타일 */
 const cardWrap = { background: "#fff", border: "1px solid #eee", borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", overflow: "hidden", marginBottom: 16 };
 const th = {
   background: "#f7f7f8",

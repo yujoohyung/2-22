@@ -6,7 +6,7 @@ import { useAppStore } from "../store";
 /** 종목코드: TIGER 미국빅테크TOP7 레버리지 */
 const CODE = "465610";
 
-/** 이 페이지 고유 키(로그/트레이드 분리용) */
+/** 이 페이지 고유 키 */
 const SYMBOL = "stock2";
 /** 합산 계산용: 반대편(나스닥) 심볼 */
 const OTHER_SYMBOL = "dashboard";
@@ -69,7 +69,7 @@ function calcSMA(values, window) {
   return out;
 }
 
-/** 다른 페이지(now 가격) 읽기용 훅: localStorage now:<SYMBOL> */
+/** 다른 페이지(now 가격) 읽기용 훅 */
 function useOtherNow(otherKey) {
   const [otherNow, setOtherNow] = useState(() => {
     try { return Number(JSON.parse(localStorage.getItem(`now:${otherKey}`) || "0")) || 0; } catch { return 0; }
@@ -86,36 +86,30 @@ function useOtherNow(otherKey) {
   return otherNow;
 }
 
-/** 부호/색상 유틸 (+ 빨강 / - 파랑) */
-const RED = "#b91c1c";   // +일 때
-const BLUE = "#1d4ed8";  // -일 때
+/** 부호/색상 유틸 */
+const RED = "#b91c1c";   
+const BLUE = "#1d4ed8"; 
 const colorPL = (v) => (v > 0 ? RED : v < 0 ? BLUE : "#111");
 const sPct = (v) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}%`;
 const sWon = (v) => `${v >= 0 ? "+" : "-"}${Number(Math.round(Math.abs(v))).toLocaleString("ko-KR")}원`;
 
 export default function Stock2Page() {
-  const { stepQty, trades, addTrade, setTrades } = useAppStore();
+  const { stepQty, trades, addTrade, setTrades, marketData, setMarketData } = useAppStore();
   const yearlyBudget = useAppStore((s) => s.yearlyBudget);
 
-  /** 다른 페이지 now (나스닥 가격) */
   const otherNow = useOtherNow(OTHER_SYMBOL);
 
-  /** trades 초기 보장(★ stock2 전용) */
+  /** trades 초기 보장 */
   useEffect(() => {
     if ((trades[SYMBOL] || []).length) return;
     setTrades(SYMBOL, []);
   }, [trades, setTrades]);
 
-  /** 위 표용 원시 rows */
   const [apiRows, setApiRows] = useState([]);
-  
-  // [수정1] isDailyReady 상태 삭제
-
-  /** 상단 표 스크롤 참조 + 최초 진입 시 최신(맨아래)로 스크롤 */
   const topTableScrollRef = useRef(null);
   const [scrolledToBottomOnce, setScrolledToBottomOnce] = useState(false);
 
-  /** 일자별 시세 로드 (RSI/200일선 + 연 1회 매도) */
+  /** 일자별 시세 로드 */
   useEffect(() => {
     (async () => {
       try {
@@ -134,13 +128,10 @@ export default function Stock2Page() {
         const out = d.output || d.output1 || [];
         const rawArr = Array.isArray(out) ? out : [];
 
-        // 클라이언트 측 중복 제거 로직
         const uniqueMap = new Map();
         rawArr.forEach((item) => {
           const key = item.stck_bsop_date || item.bstp_nmis || item.date;
-          if (key && !uniqueMap.has(key)) {
-            uniqueMap.set(key, item);
-          }
+          if (key && !uniqueMap.has(key)) uniqueMap.set(key, item);
         });
         const arr = Array.from(uniqueMap.values());
 
@@ -161,7 +152,6 @@ export default function Stock2Page() {
           const base = i > 0 ? rows[i - 1].close : (r.prev ?? r.close);
           const dp = base ? ((r.close - base) / base) * 100 : null;
 
-          // 매수 단계 (RSI 기준: 43/36/30)
           let sig = "";
           const rv = rsi[i];
           if (rv != null) {
@@ -170,7 +160,6 @@ export default function Stock2Page() {
             else if (rv <= 43) sig = "1단계";
           }
 
-          // 연 1회 매도: 200일선 하회 시 해당 연도 최초만
           const year = r.date?.slice(0, 4);
           const below200 = ma200[i] != null && r.close < ma200[i];
           const sellNow = !!(below200 && year && !soldYear.has(year));
@@ -180,21 +169,23 @@ export default function Stock2Page() {
         });
 
         setApiRows(resRows);
-        // [수정2] setIsDailyReady(true) 삭제
       } catch (e) {
         console.error(e);
       }
     })();
   }, []);
 
-  /** 현재가/고가 실시간(SSE) — 실패 시 REST 폴백 */
-  const [nowQuote, setNowQuote] = useState(null);
+  /** [최적화] 현재가 로딩 (캐시 사용 + SSE Cleanup) */
+  const cachedPrice = marketData[CODE]?.price || 0;
+  const [nowQuote, setNowQuote] = useState(cachedPrice > 0 ? { price: cachedPrice, high: 0 } : null);
 
-  // [수정3] 의존성 제거 ([]) 및 if문 삭제로 즉시 실행
   useEffect(() => {
-    // if (!isDailyReady) return;  <-- 삭제됨
-    let es = null, fallbackTimer = null, inFlight = false;
+    let es = null;
+    let fallbackTimer = null;
+    let inFlight = false;
+    let isMounted = true;
 
+    // 1. 초기 1회 REST 호출 (빠른 응답용)
     const safeFetchNow = async () => {
       if (inFlight) return;
       inFlight = true;
@@ -203,32 +194,57 @@ export default function Stock2Page() {
       try {
         const res = await fetch(`/api/kis/now?code=${CODE}`, { signal: ctrl.signal, cache: "no-store" });
         if (!res.ok) { await res.text().catch(() => ""); return; }
-        let d = null; try { d = await res.json(); } catch { return; }
+        const d = await res.json();
         if (!d || d.ok === false) return;
         const o = d.output || {};
-        setNowQuote({ price: Number(o.stck_prpr || 0), high: Number(o.stck_hgpr || 0) });
-      } finally { clearTimeout(to); inFlight = false; }
+        
+        if (isMounted) {
+          const newPrice = Number(o.stck_prpr || 0);
+          setNowQuote({ price: newPrice, high: Number(o.stck_hgpr || 0) });
+          // 스토어 업데이트 (다른 페이지 공유용)
+          if (newPrice > 0) setMarketData(CODE, { ...marketData[CODE], price: newPrice });
+        }
+      } catch {
+      } finally { 
+        clearTimeout(to); 
+        inFlight = false; 
+      }
     };
 
-    // 마운트 직후 1회 즉시 실행
     safeFetchNow();
 
+    // 2. SSE 연결 (실시간)
     try {
       es = new EventSource(`/api/kis/stream?code=${CODE}`);
       es.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.type === "tick") {
-            setNowQuote({ price: Number(msg.price || 0), high: Number(msg.high || 0) });
+          if (msg.type === "tick" && isMounted) {
+            const newPrice = Number(msg.price || 0);
+            setNowQuote({ price: newPrice, high: Number(msg.high || 0) });
+            if (newPrice > 0) setMarketData(CODE, { ...marketData[CODE], price: newPrice });
           }
         } catch {}
       };
-      es.onerror = () => { try { es.close(); } catch {}; fallbackTimer = setInterval(safeFetchNow, 2000); };
+      es.onerror = () => {
+        try { es.close(); } catch {}
+        // 연결 끊기면 폴링으로 전환
+        fallbackTimer = setInterval(safeFetchNow, 2000);
+      };
     } catch {
       fallbackTimer = setInterval(safeFetchNow, 2000);
     }
-    return () => { try { es && es.close(); } catch {}; if (fallbackTimer) clearInterval(fallbackTimer); };
-  }, []); // 의존성 배열 비움
+
+    // [중요] 언마운트 시 연결 칼같이 끊기
+    return () => {
+      isMounted = false;
+      if (es) {
+        es.close();
+        es = null;
+      }
+      if (fallbackTimer) clearInterval(fallbackTimer);
+    };
+  }, []);
 
   /** now 가격 캐시: 합산 계산용으로 localStorage 저장 */
   useEffect(() => {
@@ -246,7 +262,7 @@ export default function Stock2Page() {
     }
   }, [apiRows, scrolledToBottomOnce]);
 
-  /** 매수 누적/평단(표 표시용) — 비거래일 입력은 가장 가까운 이전 거래일로 매핑 */
+  /** 매수 누적/평단(표 표시용) */
   const rows = useMemo(() => {
     const sorted = [...apiRows].sort((a, b) => a.date.localeCompare(b.date));
     const tradingDays = sorted.map((r) => r.date);
@@ -295,7 +311,6 @@ export default function Stock2Page() {
     try { return JSON.parse(localStorage.getItem(TX_KEY) || "[]"); } catch { return []; }
   });
 
-  /** 리밸런싱 집계 저장 (rbHistory에 'stock2'로 기록) */
   function upsertRebalance({ date, price, qty }) {
     try {
       const KEY = "rbHistory";
@@ -334,7 +349,6 @@ export default function Stock2Page() {
     } catch {}
   }
 
-  /** 입력 검증 */
   const parseInputs = () => {
     const price = Number(priceInput);
     const qty = Number(qtyInput);
@@ -346,7 +360,6 @@ export default function Stock2Page() {
     return { price, qty };
   };
 
-  /** 거래 로그 저장/삭제 */
   function saveTx(row) {
     const cur = JSON.parse(localStorage.getItem(TX_KEY) || "[]");
     const next = [row, ...cur];
@@ -360,7 +373,6 @@ export default function Stock2Page() {
     setTxRows(next);
   }
 
-  /** (서버 기록) user_trades에 저장 — 심볼 통일: bigtech2x */
   async function saveToServer({ side, date, price, qty }) {
     try {
       await fetch("/api/trades/add", {
@@ -371,7 +383,6 @@ export default function Stock2Page() {
     } catch {}
   }
 
-  /** 매수/매도 */
   const handleBuy = async () => {
     const parsed = parseInputs(); if (!parsed) return;
     const { price, qty } = parsed;
@@ -381,8 +392,6 @@ export default function Stock2Page() {
     await saveToServer({ side: "BUY", date, price, qty });
     setPriceInput(""); setQtyInput("");
     requestAnimationFrame(() => { const el = topTableScrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
-
-    // (선택) 로컬 페이지 집계 API — 필요 없으면 제거해도 됨
     void fetch("/api/trades", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -399,8 +408,6 @@ export default function Stock2Page() {
     saveTx({ _txid, _ts: Date.now(), type: "SELL", date, symbol: SYMBOL, price, qty });
     await saveToServer({ side: "SELL", date, price, qty });
     setPriceInput(""); setQtyInput("");
-
-    // (선택) 로컬 페이지 집계 API — 필요 없으면 제거해도 됨
     void fetch("/api/trades", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -414,13 +421,11 @@ export default function Stock2Page() {
     removeTx(row._txid);
   };
 
-  /** 오늘 거래 로그 (이 페이지 전용) */
   const todayTx = useMemo(
     () => txRows.filter((r) => r.date === date && r.symbol === SYMBOL),
     [txRows, date]
   );
 
-  /** KPI용: 실제 매수 기록만 기반 */
   const buysThis = useMemo(() => {
     const arr = (trades[SYMBOL] || []).filter((t) => Number(t.qty) > 0);
     const qty = arr.reduce((s, t) => s + Number(t.qty || 0), 0);
@@ -434,7 +439,6 @@ export default function Stock2Page() {
     return { qty, amt, avg: qty > 0 ? amt / qty : 0 };
   }, [trades]);
 
-  /** 매도 누적(수량/금액) */
   const sellsThisQty = useMemo(
     () => (trades[SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0), 0),
     [trades]
@@ -452,7 +456,6 @@ export default function Stock2Page() {
     [trades]
   );
 
-  /** 잔여 포지션(매도 반영)과 잔여원가 */
   const avgThis = buysThis.qty > 0 ? buysThis.amt / buysThis.qty : 0;
   const avgOther = buysOther.qty > 0 ? buysOther.amt / buysOther.qty : 0;
   const remQtyThis = Math.max(0, buysThis.qty - sellsThisQty);
@@ -465,7 +468,6 @@ export default function Stock2Page() {
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>TIGER 미국빅테크TOP7 레버리지</h1>
 
-        {/* 가격/지표 표 */}
         <section style={cardWrap}>
           <div ref={topTableScrollRef} style={{ maxHeight: 420, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -528,7 +530,6 @@ export default function Stock2Page() {
           <div style={footNote}>최신일이 맨 아래입니다. 처음 들어오면 자동으로 최신행으로 스크롤돼요.</div>
         </section>
 
-        {/* 입력 */}
         <section style={{ ...cardWrap, padding: 12 }}>
           <div style={controlsGrid}>
             <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} style={inputBase} autoComplete="off" />
@@ -539,7 +540,6 @@ export default function Stock2Page() {
           </div>
         </section>
 
-        {/* 오늘 거래 로그 */}
         <section style={cardWrap}>
           <div style={{ padding: 12 }}>
             <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>오늘 거래 ({date})</div>
@@ -574,47 +574,21 @@ export default function Stock2Page() {
           </div>
         </section>
 
-        {/* KPI */}
         <section style={cardWrap}>
           {(() => {
             const cur = nowQuote?.price ?? 0;
             const high = nowQuote?.high ?? 0;
             const drop = high ? ((cur - high) / high) * 100 : 0;
 
-            const buysThis = (() => {
-              const arr = (trades[SYMBOL] || []).filter((t) => Number(t.qty) > 0);
-              const qty = arr.reduce((s, t) => s + Number(t.qty || 0), 0);
-              const amt = arr.reduce((s, t) => s + Number(t.qty || 0) * Number(t.price ?? t.buyPrice ?? 0), 0);
-              return { qty, amt, avg: qty > 0 ? amt / qty : 0 };
-            })();
-            const buysOther = (() => {
-              const arr = (trades[OTHER_SYMBOL] || []).filter((t) => Number(t.qty) > 0);
-              const qty = arr.reduce((s, t) => s + Number(t.qty || 0), 0);
-              const amt = arr.reduce((s, t) => s + Number(t.qty || 0) * Number(t.price ?? t.buyPrice ?? 0), 0);
-              return { qty, amt, avg: qty > 0 ? amt / qty : 0 };
-            })();
-
-            const sellsThisQty = (trades[SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0), 0);
-            const sellsOtherQty = (trades[OTHER_SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0), 0);
-            const sellAmtThis = (trades[SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0) * Number(t.price ?? t.sellPrice ?? 0), 0);
-            const sellAmtOther = (trades[OTHER_SYMBOL] || []).reduce((s, t) => s + Number(t.sellQty || 0) * Number(t.price ?? t.sellPrice ?? 0), 0);
-
-            const avgThis = buysThis.qty > 0 ? buysThis.amt / buysThis.qty : 0;
-            const avgOther = buysOther.qty > 0 ? buysOther.amt / buysOther.qty : 0;
-            const remQtyThis = Math.max(0, buysThis.qty - sellsThisQty);
-            const remQtyOther = Math.max(0, buysOther.qty - sellsOtherQty);
-            const remCostThis = remQtyThis * avgThis;
-            const remCostOther = remQtyOther * avgOther;
-
+            const totalBuyAmt = buysThis.amt + buysOther.amt;
             const evalThis = remQtyThis * cur;
             const profitThis = evalThis - remCostThis;
             const roiThis = remCostThis ? (profitThis / remCostThis) * 100 : 0;
             const avgCostThisDisp = remQtyThis > 0 ? (remCostThis / remQtyThis) : 0;
 
-            const otherNow = useOtherNow(OTHER_SYMBOL); // 이미 위에서 선언되어 사용 중
+            const otherNow = useOtherNow(OTHER_SYMBOL);
             const evalOther = remQtyOther * (otherNow || 0);
 
-            const totalBuyAmt = buysThis.amt + buysOther.amt;
             const totalEval = evalThis + evalOther;
             const totalProfitVsBuy = totalEval - totalBuyAmt;
             const totalROIVsBuy = totalBuyAmt ? (totalProfitVsBuy / totalBuyAmt) * 100 : 0;
@@ -666,7 +640,6 @@ export default function Stock2Page() {
   );
 }
 
-/* 스타일 */
 const cardWrap = { background: "#fff", border: "1px solid #eee", borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", overflow: "hidden", marginBottom: 16 };
 const th = {
   background: "#f7f7f8",

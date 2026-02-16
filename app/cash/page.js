@@ -1,4 +1,3 @@
-// app/cash/page.js
 "use client";
 
 import { useState, useEffect } from "react";
@@ -6,7 +5,7 @@ import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 import { saveUserSettings } from "@/lib/saveUserSettings";
 
-/* ===== 실시간 가격 훅 (스토어 캐시 우선 사용) ===== */
+/* ===== 실시간 가격 훅 (캐시 우선 사용) ===== */
 function useLivePrice(code) {
   const { marketData, setMarketData } = useAppStore();
   const cachedPrice = marketData[code]?.price || 0;
@@ -14,18 +13,20 @@ function useLivePrice(code) {
   const [price, setPrice] = useState(cachedPrice);
 
   useEffect(() => {
+    // 스토어 업데이트 구독
     if (marketData[code]?.price) {
       setPrice(marketData[code].price);
     }
   }, [marketData, code]);
 
   useEffect(() => {
-    if (!code) return;
+    let isMounted = true;
 
     const fetchPrice = async () => {
       try {
-        const res = await fetch(`/api/price?symbol=${code}`);
+        const res = await fetch(`/api/price?symbol=${code}`, { cache: "no-store" });
         const data = await res.json();
+        if (!isMounted) return;
         if (data.price && typeof data.price === 'number') {
           setPrice(data.price);
           setMarketData(code, { ...marketData[code], price: data.price });
@@ -35,11 +36,13 @@ function useLivePrice(code) {
       }
     };
     
-    // 즉시 실행 및 주기적 갱신
-    fetchPrice();
+    // 캐시 없으면 즉시 실행, 있으면 백그라운드 갱신
+    if (cachedPrice === 0) fetchPrice();
+    else fetchPrice(); 
+
     const timer = setInterval(fetchPrice, 5000); 
-    return () => clearInterval(timer);
-  }, [code, setMarketData]); 
+    return () => { isMounted = false; clearInterval(timer); };
+  }, [code, setMarketData]); // 의존성 단순화
 
   return { price };
 }
@@ -76,7 +79,7 @@ export default function CashPage() {
   const { price: priceN } = useLivePrice("418660"); // 나스닥
   const { price: priceB } = useLivePrice("465610"); // 빅테크
 
-  /* ===== 4. 계산 로직 적용 ===== */
+  /* ===== 계산 로직 ===== */
   const yearlyNasdaq = inputBudget * 0.6;
   const yearlyBigTech = inputBudget * 0.4;
 
