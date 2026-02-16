@@ -5,15 +5,15 @@ import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 import { saveUserSettings } from "@/lib/saveUserSettings";
 
-/* ===== 실시간 가격 훅 (캐시 우선 사용) ===== */
+/* ===== 실시간 가격 훅 (Debounce & Fallback) ===== */
 function useLivePrice(code) {
   const { marketData, setMarketData } = useAppStore();
   const cachedPrice = marketData[code]?.price || 0;
   
   const [price, setPrice] = useState(cachedPrice);
 
+  // 스토어 업데이트 구독
   useEffect(() => {
-    // 스토어 업데이트 구독
     if (marketData[code]?.price) {
       setPrice(marketData[code].price);
     }
@@ -21,6 +21,8 @@ function useLivePrice(code) {
 
   useEffect(() => {
     let isMounted = true;
+    let pollInterval = null;
+    let debounceTimer = null;
 
     const fetchPrice = async () => {
       try {
@@ -36,13 +38,21 @@ function useLivePrice(code) {
       }
     };
     
-    // 캐시 없으면 즉시 실행, 있으면 백그라운드 갱신
-    if (cachedPrice === 0) fetchPrice();
-    else fetchPrice(); 
+    // 1. 즉시 실행 (REST)
+    fetchPrice();
 
-    const timer = setInterval(fetchPrice, 5000); 
-    return () => { isMounted = false; clearInterval(timer); };
-  }, [code, setMarketData]); // 의존성 단순화
+    // 2. 0.5초 뒤 폴링 시작 (예치금 페이지는 SSE 대신 폴링이 안정적)
+    debounceTimer = setTimeout(() => {
+      if (!isMounted) return;
+      pollInterval = setInterval(fetchPrice, 5000); 
+    }, 500);
+
+    return () => { 
+      isMounted = false; 
+      clearTimeout(debounceTimer);
+      if (pollInterval) clearInterval(pollInterval); 
+    };
+  }, [code, setMarketData]); 
 
   return { price };
 }

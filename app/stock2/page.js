@@ -88,7 +88,7 @@ function useOtherNow(otherKey) {
 
 /** 부호/색상 유틸 */
 const RED = "#b91c1c";   
-const BLUE = "#1d4ed8"; 
+const BLUE = "#1d4ed8";  
 const colorPL = (v) => (v > 0 ? RED : v < 0 ? BLUE : "#111");
 const sPct = (v) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}%`;
 const sWon = (v) => `${v >= 0 ? "+" : "-"}${Number(Math.round(Math.abs(v))).toLocaleString("ko-KR")}원`;
@@ -109,7 +109,7 @@ export default function Stock2Page() {
   const topTableScrollRef = useRef(null);
   const [scrolledToBottomOnce, setScrolledToBottomOnce] = useState(false);
 
-  /** 일자별 시세 로드 */
+  /** 일자별 시세 로드 (REST 방식 유지) */
   useEffect(() => {
     (async () => {
       try {
@@ -175,76 +175,77 @@ export default function Stock2Page() {
     })();
   }, []);
 
-  /** [최적화] 현재가 로딩 (캐시 사용 + SSE Cleanup) */
+  /** [핵심 수정] 실시간 시세 (지연 연결 + 강제 표시 + 폴링 전환) */
   const cachedPrice = marketData[CODE]?.price || 0;
   const [nowQuote, setNowQuote] = useState(cachedPrice > 0 ? { price: cachedPrice, high: 0 } : null);
 
   useEffect(() => {
-    let es = null;
-    let fallbackTimer = null;
-    let inFlight = false;
     let isMounted = true;
+    let es = null;
+    let pollInterval = null;
+    let debounceTimer = null;
 
-    // 1. 초기 1회 REST 호출 (빠른 응답용)
-    const safeFetchNow = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 7000);
+    // A. 데이터를 가져와서 상태와 스토어에 업데이트하는 함수
+    const updatePrice = async () => {
       try {
-        const res = await fetch(`/api/kis/now?code=${CODE}`, { signal: ctrl.signal, cache: "no-store" });
-        if (!res.ok) { await res.text().catch(() => ""); return; }
+        const res = await fetch(`/api/kis/now?code=${CODE}`, { cache: "no-store" });
+        if (!res.ok) return;
         const d = await res.json();
-        if (!d || d.ok === false) return;
-        const o = d.output || {};
-        
-        if (isMounted) {
-          const newPrice = Number(o.stck_prpr || 0);
-          setNowQuote({ price: newPrice, high: Number(o.stck_hgpr || 0) });
-          // 스토어 업데이트 (다른 페이지 공유용)
-          if (newPrice > 0) setMarketData(CODE, { ...marketData[CODE], price: newPrice });
+        if (d.ok !== false && d.output && isMounted) {
+          const newPrice = Number(d.output.stck_prpr || 0);
+          const newHigh = Number(d.output.stck_hgpr || 0);
+          if (newPrice > 0) {
+            setNowQuote({ price: newPrice, high: newHigh });
+            setMarketData(CODE, { ...marketData[CODE], price: newPrice });
+          }
         }
-      } catch {
-      } finally { 
-        clearTimeout(to); 
-        inFlight = false; 
-      }
+      } catch {}
     };
 
-    safeFetchNow();
+    // 1. 진입 즉시 1회 실행 (화면이 비지 않게 함)
+    updatePrice();
 
-    // 2. SSE 연결 (실시간)
-    try {
-      es = new EventSource(`/api/kis/stream?code=${CODE}`);
-      es.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.type === "tick" && isMounted) {
-            const newPrice = Number(msg.price || 0);
-            setNowQuote({ price: newPrice, high: Number(msg.high || 0) });
-            if (newPrice > 0) setMarketData(CODE, { ...marketData[CODE], price: newPrice });
+    // 2. 0.5초 뒤 SSE 연결 시도 (Debounce)
+    debounceTimer = setTimeout(() => {
+      if (!isMounted) return;
+
+      try {
+        es = new EventSource(`/api/kis/stream?code=${CODE}`);
+        
+        es.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === "tick" && isMounted) {
+              const newPrice = Number(msg.price || 0);
+              const newHigh = Number(msg.high || 0);
+              setNowQuote({ price: newPrice, high: newHigh });
+              if (newPrice > 0) setMarketData(CODE, { ...marketData[CODE], price: newPrice });
+            }
+          } catch {}
+        };
+
+        // SSE 연결 실패 시 -> 폴링 모드로 전환 (3초 간격)
+        es.onerror = () => {
+          if (es) { es.close(); es = null; }
+          if (!pollInterval && isMounted) {
+            console.log("SSE failed, switching to polling");
+            pollInterval = setInterval(updatePrice, 3000);
           }
-        } catch {}
-      };
-      es.onerror = () => {
-        try { es.close(); } catch {}
-        // 연결 끊기면 폴링으로 전환
-        fallbackTimer = setInterval(safeFetchNow, 2000);
-      };
-    } catch {
-      fallbackTimer = setInterval(safeFetchNow, 2000);
-    }
+        };
+      } catch {
+        // SSE 초기화 실패 시 바로 폴링
+        if (!pollInterval && isMounted) pollInterval = setInterval(updatePrice, 3000);
+      }
+    }, 500); // 0.5초 대기
 
-    // [중요] 언마운트 시 연결 칼같이 끊기
+    // Cleanup: 페이지 벗어나면 모든 연결/타이머 해제
     return () => {
       isMounted = false;
-      if (es) {
-        es.close();
-        es = null;
-      }
-      if (fallbackTimer) clearInterval(fallbackTimer);
+      clearTimeout(debounceTimer);
+      if (es) es.close();
+      if (pollInterval) clearInterval(pollInterval);
     };
-  }, []);
+  }, []); // 의존성 없음 (최초 1회 로직)
 
   /** now 가격 캐시: 합산 계산용으로 localStorage 저장 */
   useEffect(() => {
@@ -262,7 +263,7 @@ export default function Stock2Page() {
     }
   }, [apiRows, scrolledToBottomOnce]);
 
-  /** 매수 누적/평단(표 표시용) */
+  /** 매수 누적/평단 계산 */
   const rows = useMemo(() => {
     const sorted = [...apiRows].sort((a, b) => a.date.localeCompare(b.date));
     const tradingDays = sorted.map((r) => r.date);
