@@ -11,14 +11,12 @@ export default function CashPage() {
   const { yearlyBudget, setYearlyBudget, setStepQty, marketData } = useAppStore();
   const [inputBudget, setInputBudget] = useState(yearlyBudget);
 
-  // [수정] Fetch 제거! Store에서 바로 읽음
   const priceN = marketData["418660"]?.price || 0;
   const priceB = marketData["465610"]?.price || 0;
 
   useEffect(() => {
     (async () => {
       try {
-        // [수정]
         const supa = getBrowserClient();
         const { data } = await supa.auth.getSession();
         if (data?.session) {

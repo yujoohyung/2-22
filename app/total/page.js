@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
-import { getBrowserClient } from "@/lib/supaClient"; // [수정] 올바른 import
+import { getBrowserClient } from "@/lib/supaClient"; // [수정]
 
 function calcRSI_Cutler(values, period = 14) {
   const n = values.length;
@@ -127,7 +127,6 @@ export default function TotalPage() {
   useEffect(() => {
     (async () => {
       try {
-        // [수정] 올바른 클라이언트 사용
         const supa = getBrowserClient();
         const { data } = await supa.auth.getSession();
         if (data?.session) {

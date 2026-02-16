@@ -3,7 +3,10 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import { useAppStore } from "../store";
 
+/** 종목코드: TIGER 미국빅테크TOP7 레버리지 */
 const CODE = "465610";
+
+/** 이 페이지 고유 키 */
 const SYMBOL = "stock2";
 const OTHER_SYMBOL = "dashboard";
 
@@ -16,6 +19,10 @@ const dkey = (s) => (s ? String(s).replace(/-/g, "").slice(0, 8) : "");
 const fmt = (n) => (n == null || Number.isNaN(n) ? "-" : Number(n).toLocaleString("ko-KR"));
 const pct = (n) => (n == null || Number.isNaN(n) ? "-" : `${Number(n).toFixed(2)}%`);
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+// [중요] 디자인용 유틸 함수 복구
+const sPct = (v) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}%`;
+const sWon = (v) => `${v >= 0 ? "+" : "-"}${Number(Math.round(Math.abs(v))).toLocaleString("ko-KR")}원`;
 
 function calcRSI_Cutler(values, period = 14) {
   const n = values.length;
@@ -63,20 +70,19 @@ export default function Stock2Page() {
   const yearlyBudget = useAppStore((s) => s.yearlyBudget);
 
   const nowQuote = marketData[CODE] || { price: 0, high: 0 };
-  const otherPrice = marketData["418660"]?.price || 0;
+  const otherPrice = marketData["418660"]?.price || 0; // 나스닥 가격
 
   useEffect(() => {
     if ((trades[SYMBOL] || []).length) return;
     setTrades(SYMBOL, []);
   }, [trades, setTrades]);
 
-  // 캐시 사용 (0초 로딩)
+  // [수정] 캐시 사용
   const [apiRows, setApiRows] = useState(dailyCache[CODE] || []);
   const topTableScrollRef = useRef(null);
   const [scrolledToBottomOnce, setScrolledToBottomOnce] = useState(false);
 
   useEffect(() => {
-    // 이미 캐시 있으면 API 호출 안함
     if (dailyCache[CODE] && dailyCache[CODE].length > 0) return;
 
     (async () => {
@@ -93,7 +99,6 @@ export default function Stock2Page() {
         const d = await res.json();
         const rawArr = d.output || d.output1 || [];
         
-        // 중복 제거 (TotalPage와 동일 로직)
         const uniqueMap = new Map();
         rawArr.forEach((item) => {
           const key = item.stck_bsop_date || item.bstp_nmis || item.date;
@@ -126,7 +131,6 @@ export default function Stock2Page() {
           const below200 = ma200[i] != null && r.close < ma200[i];
           const sellNow = !!(below200 && year && !soldYear.has(year));
           if (sellNow) soldYear.add(year);
-          // TotalPage 호환을 위해 ma200도 저장
           return { signal: sig, date: r.date, price: r.close, dailyPct: dp, rsi: rsi[i], sell: sellNow, ma200: ma200[i] };
         });
         
@@ -268,9 +272,39 @@ export default function Stock2Page() {
 
         <section style={cardWrap}>
           <div style={{padding:12,fontWeight:700}}>오늘 거래: {todayTx.length}건</div>
+          {/* 오늘 거래 로그 테이블 복구 */}
+          <div style={{ maxHeight: 3 * 44 + 56, overflowY: "auto", padding: "0 12px 12px 12px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>{["구분", "시간", "가격", "수량", "합계", ""].map((h) => (<th key={h} style={th}>{h}</th>))}</tr>
+                </thead>
+                <tbody>
+                  {todayTx.length === 0 ? (
+                    <tr><td colSpan={6} style={{ padding: 16, textAlign: "center", color: "#777" }}>내역 없음</td></tr>
+                  ) : todayTx.map((r) => {
+                    const time = new Date(r._ts || Date.now());
+                    const hh = String(time.getHours()).padStart(2, "0");
+                    const mm = String(time.getMinutes()).padStart(2, "0");
+                    const sum = Number(r.price) * Number(r.qty);
+                    const isBuy = r.type === "BUY";
+                    return (
+                      <tr key={r._txid} style={{ borderTop: "1px solid #f0f0f0", background: isBuy ? "#f0fff4" : "#fff5f5" }}>
+                        <td style={{ ...td, fontWeight: 800, color: isBuy ? "#107a2e" : "#ad1a1a" }}>{r.type}</td>
+                        <td style={td}>{`${hh}:${mm}`}</td>
+                        <td style={tdRight}>{fmt(r.price)}원</td>
+                        <td style={tdRight}>{fmt(r.qty)}</td>
+                        <td style={tdRight}>{fmt(sum)}원</td>
+                        <td style={tdRight}><button style={smallBtn} onClick={() => undoTx(r)}>삭제</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
         </section>
 
         <section style={cardWrap}>
+          {/* KPI */}
           {(() => {
             const cur = nowQuote.price || 0;
             const high = nowQuote.high || 0;
@@ -285,7 +319,7 @@ export default function Stock2Page() {
             const totalEval = amtThis + amtOther;
             
             return (
-              <div style={{display:"grid",gap:12,padding:12,gridTemplateColumns:"1fr 1fr 1fr"}}>
+              <div style={{display:"grid",gap:12,padding:12,gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))"}}>
                 <Cell title="현재가" value={`${fmt(cur)}원`} />
                 <Cell title="최고가" value={`${fmt(high)}원`} />
                 <Cell title="낙폭" value={pct(drop)} color={colorPL(drop)} />
@@ -300,18 +334,18 @@ export default function Stock2Page() {
   );
 }
 
-/* 스타일 복구 */
-const cardWrap = { background: "#fff", border: "1px solid #eee", borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", overflow: "hidden", marginBottom: 16 };
-const th = { background: "#f7f7f8", textAlign: "left", fontSize: 13, fontWeight: 700, color: "#555", padding: "10px 12px", borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 2, boxShadow: "0 1px 0 rgba(0,0,0,0.04)" };
+const cardWrap = { background: "#fff", border: "1px solid #eee", borderRadius: 12, overflow: "hidden", marginBottom: 16 };
+const th = { background: "#f7f7f8", textAlign: "left", fontSize: 13, padding: "10px 12px", position: "sticky", top: 0, zIndex: 2, fontWeight: 700, color: "#555", borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap", boxShadow: "0 1px 0 rgba(0,0,0,0.04)" };
 const td = { padding: "10px 12px", fontSize: 14, color: "#111" };
-const tdRight = { ...td, textAlign: "right", whiteSpace: "nowrap" };
-const footNote = { padding: "8px 12px", fontSize: 12, color: "#777", borderTop: "1px solid #eee" };
-const controlsGrid = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, alignItems: "center" };
-const inputBase = { minWidth: 0, width: "100%", padding: "10px 12px", border: "1px solid #ddd", borderRadius: 10, fontSize: 14, boxSizing: "border-box" };
-const buttonBase = { height: 42, minWidth: 120, borderRadius: 10, fontWeight: 700, cursor: "pointer", background: "#fff", border: "1px solid #e5e7eb", justifySelf: "stretch" };
-const buyBtn = { ...buttonBase, borderColor: "#10b981", color: "#0f766e" };
-const sellBtn = { ...buttonBase, borderColor: "#ef4444", color: "#b91c1c" };
-const smallBtn = { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontWeight: 700, cursor: "pointer" };
+const tdRight = { ...td, textAlign: "right" };
+const footNote = { padding: 8, fontSize: 12, color: "#777" };
+const controlsGrid = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(100px, 1fr))", gap: 8 };
+const inputBase = { width: "100%", padding: 10, border: "1px solid #ddd", borderRadius: 8 };
+const buttonBase = { height: 42, borderRadius: 10, fontWeight: 700, cursor: "pointer", background: "#fff", border: "1px solid #ddd" };
+const buyBtn = { ...buttonBase, borderColor: "green", color: "green" };
+const sellBtn = { ...buttonBase, borderColor: "red", color: "red" };
+const smallBtn = { padding: "4px 8px", fontSize: 12, borderRadius: 4, background: "#fff", border: "1px solid #ddd", cursor: "pointer" };
+
 function Cell({ title, value, color }) {
-  return <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "12px 14px", background: "#fff" }}><div style={{ fontSize: 13, color: "#666", fontWeight: 600, marginBottom: 6 }}>{title}</div><div style={{ fontSize: 18, fontWeight: 800, color }}>{value}</div></div>;
+  return <div style={{border:"1px solid #eee",borderRadius:8,padding:10}}><div style={{fontSize:12,color:"#666"}}>{title}</div><div style={{fontSize:16,fontWeight:700,color}}>{value}</div></div>;
 }
