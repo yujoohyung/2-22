@@ -54,7 +54,7 @@ function calcRSI_Cutler(values, period = 14) {
   return out;
 }
 
-/** SMA (200일선용) */
+/** SMA */
 function calcSMA(values, window) {
   const n = values.length;
   const out = Array(n).fill(null);
@@ -69,68 +69,50 @@ function calcSMA(values, window) {
   return out;
 }
 
-/** 다른 페이지(now 가격) 읽기용 훅 */
-function useOtherNow(otherKey) {
-  const { marketData } = useAppStore();
-  const otherCode = otherKey === "stock2" ? "465610" : "418660";
-  return marketData[otherCode]?.price || 0;
-}
-
 /** 부호/색상 유틸 */
 const RED = "#b91c1c";   
 const BLUE = "#1d4ed8";  
 const colorPL = (v) => (v > 0 ? RED : v < 0 ? BLUE : "#111");
-const sPct = (v) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}%`;
-const sWon = (v) => `${v >= 0 ? "+" : "-"}${Number(Math.round(Math.abs(v))).toLocaleString("ko-KR")}원`;
 
 export default function DashboardPage() {
-  // [수정] dailyCache 사용
   const { stepQty, trades, addTrade, setTrades, marketData, dailyCache, setDailyCache } = useAppStore();
   const yearlyBudget = useAppStore((s) => s.yearlyBudget);
 
   const nowQuote = marketData[CODE] || { price: 0, high: 0 };
-  const otherNow = useOtherNow(OTHER_SYMBOL);
+  const otherPrice = marketData["465610"]?.price || 0;
 
-  /** trades 초기 보장 */
   useEffect(() => {
     if ((trades[SYMBOL] || []).length) return;
     setTrades(SYMBOL, []);
   }, [trades, setTrades]);
 
-  // [수정] 캐시 사용
+  // 캐시 사용
   const [apiRows, setApiRows] = useState(dailyCache[CODE] || []);
-  
   const topTableScrollRef = useRef(null);
   const [scrolledToBottomOnce, setScrolledToBottomOnce] = useState(false);
 
-  /** 일자별 시세 로드 */
   useEffect(() => {
-    // [핵심] 캐시 있으면 호출 생략
+    // 캐시 확인
     if (dailyCache[CODE] && dailyCache[CODE].length > 0) return;
 
     (async () => {
       try {
         const pad = (n) => String(n).padStart(2, "0");
-        const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
         const today = new Date();
+        const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
         const end = ymd(today);
         const s = new Date(today); s.setDate(s.getDate() - 400);
         const start = ymd(s);
 
         const res = await fetch(`/api/kis/daily?code=${CODE}&start=${start}&end=${end}`);
-        if (!res.ok) { await res.text().catch(() => ""); throw new Error(`daily ${res.status}`); }
+        if (!res.ok) throw new Error();
         const d = await res.json();
-        if (!d.ok) throw new Error("daily api error");
-
-        const out = d.output || d.output1 || [];
-        const rawArr = Array.isArray(out) ? out : [];
-
+        const rawArr = d.output || d.output1 || [];
+        
         const uniqueMap = new Map();
         rawArr.forEach((item) => {
           const key = item.stck_bsop_date || item.bstp_nmis || item.date;
-          if (key && !uniqueMap.has(key)) {
-            uniqueMap.set(key, item);
-          }
+          if (key && !uniqueMap.has(key)) uniqueMap.set(key, item);
         });
         const arr = Array.from(uniqueMap.values());
 
@@ -139,43 +121,35 @@ export default function DashboardPage() {
           close: Number(x.stck_clpr || x.tdd_clsprc || x.close),
           prev:  Number(x.prdy_clpr || x.prev),
         })).filter((r) => r.date && Number.isFinite(r.close));
-
+        
         rows.sort((a, b) => a.date.localeCompare(b.date));
 
         const series = rows.map((r) => r.close);
         const rsi = calcRSI_Cutler(series, 14);
         const ma200 = calcSMA(series, 200);
-
         const soldYear = new Set();
+
         const resRows = rows.map((r, i) => {
           const base = i > 0 ? rows[i - 1].close : (r.prev ?? r.close);
           const dp = base ? ((r.close - base) / base) * 100 : null;
-
           let sig = "";
           const rv = rsi[i];
           if (rv != null) {
-            if (rv <= 30) sig = "3단계";
-            else if (rv <= 36) sig = "2단계";
-            else if (rv <= 43) sig = "1단계";
+            if (rv <= 30) sig = "3단계"; else if (rv <= 36) sig = "2단계"; else if (rv <= 43) sig = "1단계";
           }
-
           const year = r.date?.slice(0, 4);
           const below200 = ma200[i] != null && r.close < ma200[i];
           const sellNow = !!(below200 && year && !soldYear.has(year));
           if (sellNow) soldYear.add(year);
-
           return { signal: sig, date: r.date, price: r.close, dailyPct: dp, rsi: rsi[i], sell: sellNow, ma200: ma200[i] };
         });
-
+        
         setApiRows(resRows);
         setDailyCache(CODE, resRows); // 캐시 저장
-      } catch (e) {
-        console.error(e);
-      }
+      } catch {}
     })();
   }, [dailyCache, setDailyCache]);
 
-  /** 스크롤 자동 이동 */
   useEffect(() => {
     if (scrolledToBottomOnce) return;
     if (!apiRows.length) return;
@@ -185,43 +159,32 @@ export default function DashboardPage() {
     }
   }, [apiRows, scrolledToBottomOnce]);
 
-  /** 매수 누적/평단 계산 */
   const rows = useMemo(() => {
     const sorted = [...apiRows].sort((a, b) => a.date.localeCompare(b.date));
     const tradingDays = sorted.map((r) => r.date);
-
     const mapToTradingDay = (key) => {
       if (!key || tradingDays.length === 0) return null;
       let lo = 0, hi = tradingDays.length - 1, ans = -1;
       while (lo <= hi) {
         const mid = (lo + hi) >> 1;
-        if (tradingDays[mid] <= key) { ans = mid; lo = mid + 1; }
-        else hi = mid - 1;
+        if (tradingDays[mid] <= key) { ans = mid; lo = mid + 1; } else hi = mid - 1;
       }
       return ans >= 0 ? tradingDays[ans] : null;
     };
-
-    const buyQtyByDate = new Map();
-    const buyCostByDate = new Map();
+    const buyQtyByDate = new Map(), buyCostByDate = new Map();
     (trades[SYMBOL] || []).forEach((t) => {
       if (!t || !Number(t.qty)) return;
-      const rawKey = dkey(t.date);
-      const dayKey = mapToTradingDay(rawKey);
+      const dayKey = mapToTradingDay(dkey(t.date));
       if (!dayKey) return;
-      const qty = Number(t.qty || 0);
-      const price = Number(t.price ?? t.buyPrice ?? 0);
+      const qty = Number(t.qty || 0), price = Number(t.price ?? t.buyPrice ?? 0);
       buyQtyByDate.set(dayKey, (buyQtyByDate.get(dayKey) || 0) + qty);
       buyCostByDate.set(dayKey, (buyCostByDate.get(dayKey) || 0) + price * qty);
     });
-
     let cumQty = 0, cumCost = 0;
     return sorted.map((r) => {
       const dayQty = buyQtyByDate.get(r.date) || 0;
-      const dayCost = buyCostByDate.get(r.date) || 0;
-      cumQty += dayQty;
-      cumCost += dayCost;
-      const avgCost = cumQty > 0 ? Math.round(cumCost / cumQty) : null;
-      return { ...r, qty: dayQty, cumQty, avgCost };
+      cumQty += dayQty; cumCost += buyCostByDate.get(r.date) || 0;
+      return { ...r, qty: dayQty, cumQty, avgCost: cumQty > 0 ? Math.round(cumCost / cumQty) : null };
     });
   }, [trades, apiRows]);
 
@@ -378,7 +341,7 @@ export default function DashboardPage() {
   const roiThis = remCostThis ? (profitThis / remCostThis) * 100 : 0;
   const avgCostThisDisp = remQtyThis > 0 ? (remCostThis / remQtyThis) : 0;
 
-  const evalOther = remQtyOther * (otherNow || 0);
+  const evalOther = remQtyOther * (otherPrice || 0);
 
   const totalBuyAmt = buysThis.amt + buysOther.amt;
   const totalEval = evalThis + evalOther;

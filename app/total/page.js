@@ -4,60 +4,62 @@ import { useState, useEffect } from "react";
 import { useAppStore } from "../store";
 import { supa } from "@/lib/supaClient";
 
+// [중요] 개별 페이지와 동일한 알고리즘 사용
 function calcRSI_Cutler(values, period = 14) {
   const n = values.length;
   if (!Array.isArray(values) || n < period + 1) return null;
-  const gains = new Array(n).fill(0);
-  const losses = new Array(n).fill(0);
+  const gains = Array(n).fill(0), losses = Array(n).fill(0);
   for (let i = 1; i < n; i++) {
-    const diff = values[i] - values[i - 1];
-    if (diff > 0) gains[i] = diff; else losses[i] = -diff;
+    const d = values[i] - values[i - 1];
+    gains[i] = d > 0 ? d : 0;
+    losses[i] = d < 0 ? -d : 0;
   }
   let sumG = 0, sumL = 0;
   for (let i = 1; i <= period; i++) { sumG += gains[i]; sumL += losses[i]; }
   let avgG = sumG / period, avgL = sumL / period;
-  let rsiArray = new Array(n).fill(null);
-  rsiArray[period] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - (100 / (1 + (avgG / avgL)));
+  const out = Array(n).fill(null);
+  out[period] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - 100 / (1 + (avgG / avgL));
   for (let i = period + 1; i < n; i++) {
     sumG += gains[i] - gains[i - period];
     sumL += losses[i] - losses[i - period];
     avgG = sumG / period; avgL = sumL / period;
-    rsiArray[i] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - (100 / (1 + (avgG / avgL)));
+    out[i] = avgL === 0 ? 100 : avgG === 0 ? 0 : 100 - 100 / (1 + (avgG / avgL));
   }
-  return rsiArray[n - 1];
+  return out; // 전체 배열 반환
 }
 
-function calcSMA(values, period = 200) {
+function calcSMA(values, window) {
   const n = values.length;
-  if (n < period) return null;
+  const out = Array(n).fill(null);
+  if (!Array.isArray(values) || window <= 0 || n < window) return out;
   let sum = 0;
-  for (let i = n - period; i < n; i++) sum += values[i];
-  return sum / period;
+  for (let i = 0; i < window; i++) sum += values[i];
+  out[window - 1] = sum / window;
+  for (let i = window; i < n; i++) {
+    sum += values[i] - values[i - window];
+    out[i] = sum / window;
+  }
+  return out;
 }
 
 const won = (n) => (n > 0 ? Number(Math.round(n)).toLocaleString("ko-KR") + "원" : "-");
 
-// [수정] 데이터 훅에 캐시 적용
 function useStockData(code) {
   const { marketData, dailyCache, setDailyCache } = useAppStore();
   const nowPrice = marketData[code]?.price || 0; 
 
-  const [history, setHistory] = useState({ rsi: null, ma200: null, ready: false });
+  // 캐시가 있으면 마지막 데이터(최신)를 바로 사용
+  const cachedRows = dailyCache[code];
+  const lastRow = cachedRows && cachedRows.length > 0 ? cachedRows[cachedRows.length - 1] : null;
 
-  // 1. 캐시가 있으면 즉시 계산
-  useEffect(() => {
-    if (dailyCache[code] && dailyCache[code].length > 0) {
-      const candles = dailyCache[code].map((i) => i.price).reverse();
-      setHistory({
-        rsi: calcRSI_Cutler(candles, 14),
-        ma200: calcSMA(candles, 200),
-        ready: true
-      });
-    }
-  }, [code, dailyCache]);
+  const [history, setHistory] = useState({ 
+    rsi: lastRow?.rsi || null, 
+    ma200: lastRow?.ma200 || null, // 캐시에 ma200이 없다면 계산 필요할 수 있음(아래 로직 참조)
+    ready: !!lastRow 
+  });
 
-  // 2. 캐시 없으면 로딩
   useEffect(() => {
+    // 이미 캐시가 있으면 재계산/재호출 안 함
     if (dailyCache[code] && dailyCache[code].length > 0) return;
 
     const fetchDaily = async () => {
@@ -70,21 +72,60 @@ function useStockData(code) {
 
         const res = await fetch(`/api/kis/daily?code=${code}&start=${start}&end=${end}`);
         const json = await res.json();
-        const items = Array.isArray(json.output) ? json.output : (json.output2 || []);
+        const rawArr = Array.isArray(json.output) ? json.output : (json.output2 || []);
         
-        // 캐시 구조에 맞춰 변환 (page.js와 통일성을 위해 price 속성 사용)
-        const rows = items.map((x) => ({
-          date: x.stck_bsop_date || x.date,
-          price: Number(x.stck_clpr || x.close),
-        })).filter(r => r.date && r.price);
+        // [중요] 개별 페이지와 동일한 중복 제거 로직
+        const uniqueMap = new Map();
+        rawArr.forEach((item) => {
+          const key = item.stck_bsop_date || item.bstp_nmis || item.date;
+          if (key && !uniqueMap.has(key)) uniqueMap.set(key, item);
+        });
+        const arr = Array.from(uniqueMap.values());
 
-        if (rows.length > 0) {
-          setDailyCache(code, rows.reverse()); // 최신순 정렬해서 저장
+        // 날짜 오름차순 정렬 (과거 -> 현재)
+        const rows = arr.map((x) => ({
+          date: x.stck_bsop_date || x.bstp_nmis || x.date,
+          close: Number(x.stck_clpr || x.tdd_clsprc || x.close),
+        })).filter((r) => r.date && Number.isFinite(r.close));
+        
+        rows.sort((a, b) => a.date.localeCompare(b.date));
+
+        // 지표 계산
+        const series = rows.map(r => r.close);
+        const rsiArr = calcRSI_Cutler(series, 14);
+        const ma200Arr = calcSMA(series, 200);
+
+        // 캐시용 데이터 생성 (개별 페이지와 호환되게)
+        const resRows = rows.map((r, i) => ({
+          ...r,
+          price: r.close, // 개별 페이지 호환용
+          rsi: rsiArr[i],
+          ma200: ma200Arr[i] // TotalPage에서 필요
+        }));
+
+        setDailyCache(code, resRows); // 전역 캐시에 저장
+
+        // 현재 상태 업데이트
+        if (resRows.length > 0) {
+          const last = resRows[resRows.length - 1];
+          setHistory({ rsi: last.rsi, ma200: last.ma200, ready: true });
         }
-      } catch {}
+      } catch (e) { console.error(e); }
     };
     fetchDaily();
   }, [code, dailyCache, setDailyCache]);
+
+  // 캐시가 업데이트되면 상태 동기화
+  useEffect(() => {
+    if (dailyCache[code] && dailyCache[code].length > 0) {
+      const last = dailyCache[code][dailyCache[code].length - 1];
+      // ma200은 캐시에 없을 수도 있음(이전 버전 캐시라면). 방어코드.
+      // 하지만 위 로직대로면 저장됨.
+      if (last) {
+        setHistory({ rsi: last.rsi, ma200: last.ma200 || null, ready: true });
+      }
+    }
+  }, [dailyCache, code]);
 
   return { price: nowPrice, ...history };
 }
@@ -127,9 +168,9 @@ export default function TotalPage() {
       signalText = "매도 (30% 비중)";
       signalColor = "#ef4444"; 
     } else if (rsiN !== null) {
-      if (rsiN < 30) { signalType = "BUY"; stage = 3; signalText = "3단계 매수"; signalColor = "#dc2626"; }
-      else if (rsiN < 36) { signalType = "BUY"; stage = 2; signalText = "2단계 매수"; signalColor = "#f59e0b"; }
-      else if (rsiN < 43) { signalType = "BUY"; stage = 1; signalText = "1단계 매수"; signalColor = "#eab308"; }
+      if (rsiN <= 30) { signalType = "BUY"; stage = 3; signalText = "3단계 매수"; signalColor = "#dc2626"; }
+      else if (rsiN <= 36) { signalType = "BUY"; stage = 2; signalText = "2단계 매수"; signalColor = "#f59e0b"; }
+      else if (rsiN <= 43) { signalType = "BUY"; stage = 1; signalText = "1단계 매수"; signalColor = "#eab308"; }
       else { signalType = "HOLD"; signalText = "관망"; signalColor = "#10b981"; }
     }
   }
@@ -159,7 +200,7 @@ export default function TotalPage() {
       <div className="status-table">
         <div className="t-row">
           <div className="cell label">나스닥 RSI</div>
-          <div className="cell val rsi" style={{ color: rsiN && rsiN < 43 ? "#dc2626" : "#111" }}>
+          <div className="cell val rsi" style={{ color: rsiN && rsiN <= 43 ? "#dc2626" : "#111" }}>
             {nasdaq.ready ? (rsiN ? rsiN.toFixed(2) : "-") : "..."}
           </div>
           <div className="cell label">현재가</div>
@@ -193,7 +234,7 @@ export default function TotalPage() {
         </div>
       </div>
       <div className="footer-info">
-        * 매수 기준: 나스닥 RSI (43 / 36 / 30 미만)<br/>
+        * 매수 기준: 나스닥 RSI (43 / 36 / 30 이하)<br/>
         * 매도 기준: 나스닥 가격이 200일 이평선({nasdaq.ready && ma200N ? won(ma200N) : "-"}) 미만 시
       </div>
       <style jsx>{`
