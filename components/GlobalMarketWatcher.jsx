@@ -6,7 +6,7 @@ import { useAppStore } from "../app/store";
 const SYMBOLS = ["465610", "418660"]; // 빅테크, 나스닥
 
 export default function GlobalMarketWatcher() {
-  const { marketData, setMarketData } = useAppStore();
+  const { setMarketData } = useAppStore();
 
   useEffect(() => {
     const connections = {};
@@ -24,7 +24,6 @@ export default function GlobalMarketWatcher() {
               if (d.output?.stck_prpr) {
                 const price = Number(d.output.stck_prpr);
                 const high = Number(d.output.stck_hgpr);
-                // 기존 데이터와 다를 때만 업데이트 (렌더링 최적화)
                 setMarketData(code, { price, high });
               }
             })
@@ -63,11 +62,10 @@ export default function GlobalMarketWatcher() {
       connect();
     });
 
-    // 앱 종료 시에만 연결 해제
     return () => {
       Object.values(connections).forEach((es) => es?.close());
     };
   }, [setMarketData]);
 
-  return null; // 화면에 보이지 않음
+  return null;
 }

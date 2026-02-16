@@ -3,7 +3,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 
-/** 내부 유틸: 매수/매도 합계 계산 */
 function sumBuySell(rows = []) {
   let buy = 0, sell = 0;
   for (const r of rows) {
@@ -14,7 +13,6 @@ function sumBuySell(rows = []) {
   return { buy, sell };
 }
 
-/* ---- 얕은 비교 유틸 ---- */
 const shallowObjEqual = (a, b) => {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -40,14 +38,13 @@ const shallowArrayOfObjEqual = (a = [], b = []) => {
   return true;
 };
 
-/** 전역 상태 (persist 적용) */
 export const useAppStore = create(
   persist(
     (set, get) => ({
       yearlyBudget: 20_000_000,
 
-      // [추가] 시장 데이터 캐시 (코드별 저장)
-      marketData: {}, 
+      marketData: {}, // 실시간 가격
+      dailyCache: {}, // [추가] 차트 데이터 캐시 (페이지 이동 시 로딩 제거용)
 
       stepQty: {
         nasdaq2x:  { s1: 0, s2: 0, s3: 0 },
@@ -59,14 +56,18 @@ export const useAppStore = create(
         BIGTECH2X: [],
       },
 
-      // actions
       setYearlyBudget: (amt) =>
         set((s) => (s.yearlyBudget === amt ? s : { yearlyBudget: amt })),
 
-      // [추가] 데이터 업데이트 액션
       setMarketData: (code, data) =>
         set((s) => ({
           marketData: { ...s.marketData, [code]: data }
+        })),
+
+      // [추가] 차트 데이터 저장
+      setDailyCache: (code, rows) => 
+        set((s) => ({
+          dailyCache: { ...s.dailyCache, [code]: rows }
         })),
 
       setStepQty: (next) =>
@@ -95,12 +96,12 @@ export const useAppStore = create(
     {
       name: "app-storage",
       storage: createJSONStorage(() => localStorage),
-      // persist 저장 시 marketData도 포함하여 새로고침 해도 데이터 유지
       partialize: (s) => ({
         yearlyBudget: s.yearlyBudget,
         stepQty: s.stepQty,
         trades: s.trades,
-        marketData: s.marketData, // 캐시 저장
+        marketData: s.marketData,
+        // dailyCache는 제외 (새로고침 시 갱신, 페이지 이동 간에는 유지)
       }),
     }
   )

@@ -19,7 +19,7 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`} style={bodyStyle}>
-        <GlobalMarketWatcher /> {/* [핵심] 전역 시세 관리자 추가 */}
+        <GlobalMarketWatcher /> {/* [핵심] 전역 시세 관리자 */}
         <RebalanceBus />
         <NavBar />
         {children}

@@ -37,14 +37,29 @@ function calcSMA(values, period = 200) {
 
 const won = (n) => (n > 0 ? Number(Math.round(n)).toLocaleString("ko-KR") + "원" : "-");
 
+// [수정] 데이터 훅에 캐시 적용
 function useStockData(code) {
-  const { marketData } = useAppStore();
-  const nowPrice = marketData[code]?.price || 0; // 전역 데이터
+  const { marketData, dailyCache, setDailyCache } = useAppStore();
+  const nowPrice = marketData[code]?.price || 0; 
 
   const [history, setHistory] = useState({ rsi: null, ma200: null, ready: false });
 
-  // 과거 데이터(RSI용) 1회 로딩
+  // 1. 캐시가 있으면 즉시 계산
   useEffect(() => {
+    if (dailyCache[code] && dailyCache[code].length > 0) {
+      const candles = dailyCache[code].map((i) => i.price).reverse();
+      setHistory({
+        rsi: calcRSI_Cutler(candles, 14),
+        ma200: calcSMA(candles, 200),
+        ready: true
+      });
+    }
+  }, [code, dailyCache]);
+
+  // 2. 캐시 없으면 로딩
+  useEffect(() => {
+    if (dailyCache[code] && dailyCache[code].length > 0) return;
+
     const fetchDaily = async () => {
       try {
         const d = new Date();
@@ -56,19 +71,20 @@ function useStockData(code) {
         const res = await fetch(`/api/kis/daily?code=${code}&start=${start}&end=${end}`);
         const json = await res.json();
         const items = Array.isArray(json.output) ? json.output : (json.output2 || []);
-        const candles = items.map((i) => Number(i.stck_clpr || i.close)).reverse();
+        
+        // 캐시 구조에 맞춰 변환 (page.js와 통일성을 위해 price 속성 사용)
+        const rows = items.map((x) => ({
+          date: x.stck_bsop_date || x.date,
+          price: Number(x.stck_clpr || x.close),
+        })).filter(r => r.date && r.price);
 
-        if (candles.length > 0) {
-          setHistory({
-            rsi: calcRSI_Cutler(candles, 14),
-            ma200: calcSMA(candles, 200),
-            ready: true
-          });
+        if (rows.length > 0) {
+          setDailyCache(code, rows.reverse()); // 최신순 정렬해서 저장
         }
       } catch {}
     };
     fetchDaily();
-  }, [code]);
+  }, [code, dailyCache, setDailyCache]);
 
   return { price: nowPrice, ...history };
 }
